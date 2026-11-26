@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,25 +30,52 @@ import com.jcraft.jsch.SftpException;
 import com.jcraft.jsch.SftpProgressMonitor;
 
 /**
- * 一次 SSH 会话，支持执行命令与 SFTP 上传，用完即关。
+ * 一次 SSH 会话，支持执行命令与 SFTP 上传。
+ * <p>
+ * 生命周期有两种模式：
+ * <ul>
+ *   <li>独立模式（无 {@link PoolCallback}）：{@link #close()} 直接断开连接，与早期行为一致；</li>
+ *   <li>池化模式：{@link #close()} 只把连接「归还」给 {@link com.example.deploy.ssh.SshService} 复用，
+ *       不主动断开；连接真的断开时由回调自动重建一次并重试当前命令。</li>
+ * </ul>
  */
 public class SshSession implements Closeable {
 
     private static final Logger log = LoggerFactory.getLogger(SshSession.class);
 
-    private final Session session;
+    /** 连接池回调：池化模式下由 SshService 实现 */
+    public interface PoolCallback {
+        /** 当前连接已断开时重建，返回可用的连接；无法重连返回 null */
+        Session reconnect();
+
+        /** 归还连接（不主动断开），供下一次操作复用 */
+        void release(Session current);
+    }
+
+    /** 当前连接：池化模式下可能被 reconnect 替换，故非 final */
+    private volatile Session session;
     private final ServerConfig config;
     private final int execTimeoutSeconds;
     private final OperationLogService opLog;
     private final String stagingDir;
-    private boolean suLogged = false;
+    /** su 提权审计标记：池化时跨会话共享，避免复用一个连接就重复记一条 SU 日志 */
+    private final AtomicBoolean suLogged;
+    private final PoolCallback poolCallback;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     public SshSession(Session session, ServerConfig config, int execTimeoutSeconds, OperationLogService opLog,
                       String defaultStagingDir) {
+        this(session, config, execTimeoutSeconds, opLog, defaultStagingDir, null, null);
+    }
+
+    public SshSession(Session session, ServerConfig config, int execTimeoutSeconds, OperationLogService opLog,
+                      String defaultStagingDir, PoolCallback poolCallback, AtomicBoolean sharedSuFlag) {
         this.session = session;
         this.config = config;
         this.execTimeoutSeconds = execTimeoutSeconds;
         this.opLog = opLog;
+        this.poolCallback = poolCallback;
+        this.suLogged = sharedSuFlag == null ? new AtomicBoolean(false) : sharedSuFlag;
         // 优先用服务器自身配置的中转目录（前端可配），为空才回退全局默认
         String perServer = config == null ? null : config.getStagingDir();
         this.stagingDir = normalizeStagingDir(
@@ -140,12 +168,11 @@ public class SshSession implements Closeable {
         }
     }
 
-    /** su 提权只记录一次（每会话），用于审计；认证失败通过输出特征判断 */
+    /** su 提权只记录一次（每个连接），用于审计；认证失败通过输出特征判断 */
     private void logSuOnce(ServerConfig cfg, CommandResult r) {
-        if (suLogged) {
+        if (!suLogged.compareAndSet(false, true)) {
             return;
         }
-        suLogged = true;
         boolean ok = !isSuAuthFailure(r);
         opLog.record(cfg, "SU", ok, r.getCostMs(),
                 "切换至 " + cfg.effectiveSuUser() + (ok ? "" : "（认证失败，请检查 su 密码）"));
@@ -416,6 +443,15 @@ public class SshSession implements Closeable {
     }
 
     private CommandResult doExec(String command) {
+        CommandResult result = doExecOnce(command);
+        // 连接被服务器/网络断开（空闲被踢、网络抖动、sshd 重启等）：自动重连一次再试，对调用方透明
+        if (result.getExitCode() == -1 && !sessionAlive() && tryReconnect()) {
+            result = doExecOnce(command);
+        }
+        return result;
+    }
+
+    private CommandResult doExecOnce(String command) {
         long start = System.currentTimeMillis();
         CommandResult result = new CommandResult(command);
         ChannelExec channel = null;
@@ -725,10 +761,55 @@ public class SshSession implements Closeable {
         }
     }
 
+    /** 当前连接是否仍然可用 */
+    private boolean sessionAlive() {
+        Session s = session;
+        return s != null && s.isConnected();
+    }
+
+    /** 连接已断开时重建一次，成功返回 true（仅池化模式） */
+    private boolean tryReconnect() {
+        if (poolCallback == null) {
+            return false;
+        }
+        try {
+            Session fresh = poolCallback.reconnect();
+            if (fresh == null || !fresh.isConnected()) {
+                return false;
+            }
+            session = fresh;
+            log.info("SSH 连接已重建，重试当前操作 {}@{}", config == null ? "" : config.getUsername(),
+                    config == null ? "" : config.getHost());
+            return true;
+        } catch (Exception e) {
+            log.warn("SSH 自动重连失败: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 池化模式下只归还连接（不主动断开），由 SshService 统一做空闲回收；
+     * 独立模式下直接断开，保持原有语义。close 幂等。
+     */
     @Override
     public void close() {
-        if (session != null && session.isConnected()) {
-            session.disconnect();
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        Session current = session;
+        if (poolCallback != null) {
+            try {
+                poolCallback.release(current);
+            } catch (Exception e) {
+                log.warn("归还 SSH 连接失败: {}", e.getMessage());
+                if (current != null && current.isConnected()) {
+                    current.disconnect();
+                }
+            }
+            return;
+        }
+        if (current != null && current.isConnected()) {
+            current.disconnect();
         }
     }
 }

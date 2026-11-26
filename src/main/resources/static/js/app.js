@@ -388,6 +388,8 @@
         $('seqStatus').style.display = 'none';
       }
       $('logOutput').textContent = '点击「查询」查看远程日志尾部';
+      // 切换服务器时停掉上一个配置的日志自动刷新
+      stopAutoLog();
       // SFTP 文件浏览默认收起，点击「SFTP 传输」按钮才展开（见 toggleSftp）
       // 切换服务器时重置终端：清空历史与本地目录，并通知服务端重置 cwd
       resetCmdTerminal();
@@ -2714,13 +2716,35 @@
     el.title = p || '';
   }
 
-  /** 切换 info / error 日志页签 */
+  /** 停掉日志自动刷新（同时取消勾选） */
+  function stopAutoLog() {
+    if (autoLogTimer) {
+      clearInterval(autoLogTimer);
+      autoLogTimer = null;
+    }
+    var cb = $('autoLog');
+    if (cb && cb.checked) {
+      cb.checked = false;
+    }
+  }
+
+  /** 日志请求序号：只渲染「最后一次发起」且页签未变的结果，避免慢请求回来把新内容覆盖掉 */
+  var logReqSeq = 0;
+
+  /** 切换 info / error 日志页签：切换后自动停掉自动刷新，避免两边的定时刷新串在一起 */
   function setLogType(type) {
     logType = type === 'error' ? 'error' : 'info';
+    // 作废在途请求：之前 info 的慢响应不能覆盖 error 的内容
+    logReqSeq++;
     Array.prototype.forEach.call(document.querySelectorAll('#logTypeSwitch button'), function (b) {
       b.classList.toggle('active', b.getAttribute('data-logtype') === logType);
     });
+    stopAutoLog();
     updateLogPathHint();
+    var out = $('logOutput');
+    if (out) {
+      out.textContent = currentTarget ? ('正在查询 ' + logType + ' 日志…') : '请先选择发布配置';
+    }
   }
 
   function loadLog(btn) {
@@ -2734,12 +2758,21 @@
     var url = '/api/apps/' + currentTarget.id + '/log?lines=' + lines + '&type=' + logType;
     if (q) { url += '&q=' + encodeURIComponent(q); }
     updateLogPathHint();
+    var seq = ++logReqSeq;
+    var reqType = logType;
+    var reqTargetId = currentTarget.id;
     getJson(url).then(function (text) {
-      $('logOutput').textContent = text || '（日志为空）';
+      // 过期响应（已切换 info/error、已换服务器、或又发起了更新的请求）直接丢弃
+      if (seq !== logReqSeq || reqType !== logType || !currentTarget || reqTargetId !== currentTarget.id) {
+        return;
+      }
       var pre = $('logOutput');
+      pre.textContent = text || '（日志为空）';
       pre.scrollTop = pre.scrollHeight;
     }).catch(function (e) {
-      toast(e.message, 'err');
+      if (seq === logReqSeq) {
+        toast(e.message, 'err');
+      }
     }).then(function () {
       busy(btn, false);
     });
@@ -3824,8 +3857,12 @@
       updateCmdPrompt();
       $('cmdInput').focus();
     }
+    if (tab !== 'log') {
+      // 离开运行日志页签时停掉自动刷新，避免后台每 5 秒仍然去拉日志
+      stopAutoLog();
+    }
     if (tab === 'log') {
-      // 进入运行日志页签时按当前 info/error 选择自动拉取一次，省掉再点一次查询
+      // 进入运行日志页签时按当前 info/error 选择自动查询一次，无需再点「查询」
       updateLogPathHint();
       if (currentTarget) {
         loadLog();
@@ -4207,13 +4244,22 @@
     });
 
     $('autoLog').onchange = function () {
-      if (this.checked) {
-        autoLogTimer = setInterval(function () {
-          loadLog();
-        }, 5000);
-      } else if (autoLogTimer) {
+      // 先清掉可能残留的旧定时器：反复勾选 / 取消后不会叠加多个 interval
+      if (autoLogTimer) {
         clearInterval(autoLogTimer);
         autoLogTimer = null;
+      }
+      if (this.checked) {
+        loadLog();
+        autoLogTimer = setInterval(function () {
+          // 兜底自愈：勾选被取消（或页签已离开）时，残留的定时器自己也停掉
+          var cb = $('autoLog');
+          if (!cb || !cb.checked) {
+            stopAutoLog();
+            return;
+          }
+          loadLog();
+        }, 5000);
       }
     };
 
