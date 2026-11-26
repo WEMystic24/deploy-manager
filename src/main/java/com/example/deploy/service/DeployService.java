@@ -1547,7 +1547,13 @@ public class DeployService {
         return t;
     }
 
-    private DeployTask createTask(ServerConfig config, DeployTarget target, String action) {
+    private synchronized DeployTask createTask(ServerConfig config, DeployTarget target, String action) {
+        // 同一发布配置同时只允许一个任务：连点「一键发布」会让两个任务交叉执行
+        // （A 刚启动、B 又把它停掉），两套配置之间不受影响，但同一个配置内必须串行
+        String running = runningAction(target.getId());
+        if (running != null) {
+            throw new IllegalStateException("该发布配置正在执行「" + running + "」，请等待当前任务结束后再操作");
+        }
         DeployTask t = new DeployTask();
         t.taskId = UUID.randomUUID().toString().replace("-", "");
         t.serverId = config.getId();
@@ -1557,6 +1563,16 @@ public class DeployService {
         taskMap.put(t.taskId, t);
         lastTaskByTarget.put(target.getId(), t.taskId);
         return t;
+    }
+
+    /** 该发布配置是否有尚未结束的任务；有则返回其动作名，否则返回 null */
+    private String runningAction(String targetId) {
+        String lastId = lastTaskByTarget.get(targetId);
+        if (lastId == null) {
+            return null;
+        }
+        DeployTask last = taskMap.get(lastId);
+        return last != null && !last.isFinished() ? last.action : null;
     }
 
     // ---------------------------------------------------------------- 远程脚本
@@ -1623,49 +1639,53 @@ public class DeployService {
 
     private String stopScript(DeployTarget t) {
         int wait = Math.max(3, properties.getStopWaitSeconds());
-        String pidFile = t.effectivePidFile();
-        // 自定义部署可能有多个 jar，统一用一个扩展正则匹配任一 jar 的进程
-        String jarPattern = ShellUtil.quote(jarRegex(t, false));
+        String pidFile = ShellUtil.quote(t.effectivePidFile());
+        String nameRe = ShellUtil.quote(jarRegex(t, false));
         StringBuilder sb = new StringBuilder();
-        // 1) 优先用启动脚本写入的 pid 文件定位并优雅停止（最可靠）
-        sb.append("PID=\"\"\n");
-        sb.append("if [ -f ").append(ShellUtil.quote(pidFile)).append(" ]; then PID=$(cat ")
-                .append(ShellUtil.quote(pidFile)).append(" 2>/dev/null | tr -d ' \\t' | head -1); fi\n");
-        sb.append("if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then\n");
-        sb.append("  echo \"停止进程 pid=$PID（来自 pid 文件）\"\n");
-        sb.append("  kill \"$PID\" 2>/dev/null\n");
-        sb.append("else\n");
-        // 2) pid 文件失效，回退 pidCommand 解析
-        sb.append("  PID=$(").append(pidCommand(t)).append(")\n");
-        sb.append("  if [ -n \"$PID\" ]; then\n");
-        sb.append("    echo \"停止进程 pid=$PID（命令行匹配）\"\n");
-        sb.append("    kill \"$PID\" 2>/dev/null\n");
-        sb.append("  fi\n");
-        sb.append("fi\n");
-        // 3) 等待优雅退出
+        // 先按发布目录精确定位，再与 pid 文件合并去重：
+        // 同机同账号下可能有生产/测试两套同名 jar，只按文件名杀会把两套一起干掉
+        sb.append("PIDS=$(").append(pidListCommand(t)).append(")\n");
+        sb.append("PF=").append(pidFile).append("\n");
+        sb.append("if [ -f \"$PF\" ]; then FP=$(cat \"$PF\" 2>/dev/null | tr -d ' \\t\\r\\n' | head -1); ");
+        sb.append("if [ -n \"$FP\" ] && kill -0 \"$FP\" 2>/dev/null; then ");
+        sb.append("case \" $PIDS \" in *\" $FP \"*) ;; *) ");
+        // pid 文件可能与实际不符（进程重启后残留），只有定位不到进程、
+        // 或该 PID 的命令行确实含本配置的 jar 名时才纳入，避免误杀无关进程
+        sb.append("if [ -z \"$PIDS\" ]; then PIDS=\"$FP\"; ");
+        sb.append("elif ps -o args= -p $FP 2>/dev/null | grep -qE ").append(nameRe);
+        sb.append("; then PIDS=\"$PIDS $FP\"; fi ;; esac; fi; fi\n");
+        sb.append("PIDS=$(echo $PIDS)\n");
+        sb.append("if [ -z \"$PIDS\" ]; then echo 'NOT_RUNNING 没有正在运行的进程'; rm -f \"$PF\"; exit 0; fi\n");
+        sb.append("echo \"停止进程 pid=$PIDS\"\n");
+        sb.append("kill $PIDS 2>/dev/null\n");
+        // 等待优雅退出
         sb.append("i=0\n");
         sb.append("while [ $i -lt ").append(wait).append(" ]; do\n");
-        sb.append("  if [ -z \"$(pgrep -f ").append(jarPattern)
-                .append(" 2>/dev/null | grep -v 'deploy-manager')\" ]; then echo STOPPED; "
-                + "rm -f ").append(ShellUtil.quote(pidFile)).append("; exit 0; fi\n");
+        sb.append("  LEFT=''\n");
+        sb.append("  for q in $PIDS; do kill -0 \"$q\" 2>/dev/null && LEFT=\"$LEFT $q\"; done\n");
+        sb.append("  if [ -z \"$(echo $LEFT)\" ]; then echo STOPPED; rm -f \"$PF\"; exit 0; fi\n");
         sb.append("  sleep 1\n");
         sb.append("  i=$((i+1))\n");
         sb.append("done\n");
-        // 4) 优雅退出超时，直接用 pkill -f 按文件名强杀（不依赖先解析 PID，最可靠）
-        sb.append("echo '优雅停止超时，按文件名强制结束';\n");
-        sb.append("pkill -9 -f ").append(jarPattern).append(" 2>/dev/null\n");
+        // 优雅退出超时：只强杀本次定位到的 PID，不用 pkill -f，避免连同名 jar 的其它环境一起杀掉
+        sb.append("echo '优雅停止超时，强制结束'\n");
+        sb.append("kill -9 $LEFT 2>/dev/null\n");
         sb.append("sleep 1\n");
-        sb.append("if [ -n \"$(pgrep -f ").append(jarPattern)
-                .append(" 2>/dev/null | grep -v 'deploy-manager')\" ]; then echo KILL_FAILED; "
-                + "rm -f ").append(ShellUtil.quote(pidFile)).append("; exit 1; fi\n");
-        sb.append("rm -f ").append(ShellUtil.quote(pidFile)).append("\n");
+        sb.append("LEFT=''\n");
+        sb.append("for q in $PIDS; do kill -0 \"$q\" 2>/dev/null && LEFT=\"$LEFT $q\"; done\n");
+        sb.append("if [ -n \"$(echo $LEFT)\" ]; then echo KILL_FAILED; rm -f \"$PF\"; exit 1; fi\n");
+        sb.append("rm -f \"$PF\"\n");
         sb.append("echo FORCE_KILLED\n");
         return sb.toString();
     }
 
     private String statusScript(DeployTarget t) {
         StringBuilder sb = new StringBuilder();
+        // 先按发布目录精确定位真实进程（最准确）；定位不到再回退启动时写入的 pid 文件
         sb.append("PID=$(").append(pidCommand(t)).append(")\n");
+        sb.append("PF=").append(ShellUtil.quote(t.effectivePidFile())).append("\n");
+        sb.append("if [ -z \"$PID\" ] && [ -f \"$PF\" ]; then P=$(cat \"$PF\" 2>/dev/null | tr -d ' \\t\\r\\n' | head -1); ");
+        sb.append("if [ -n \"$P\" ] && kill -0 \"$P\" 2>/dev/null; then PID=\"$P\"; fi; fi\n");
         sb.append("echo \"PID|$PID\"\n");
         sb.append("if [ -n \"$PID\" ]; then\n");
         // 启动时间统一输出 YYYY-MM-DD HH:mm:ss：
@@ -1880,22 +1900,51 @@ public class DeployService {
     }
 
     /**
-     * 定位运行指定 jar 的进程 PID（自定义部署时可匹配多个 jar）。
-     * 采用多模式回退，尽量在各种环境（GNU ps / busybox ps、路径为软链/相对/绝对）下都能命中：
-     *   1) pgrep -f 按 jar 文件名匹配（最稳，且不要求 -jar 紧邻）
-     *   2) ps 按 jar 文件名匹配
-     *   3) ps 按完整 jar 路径匹配
-     * 排除本工具自身的 java 进程（命令行含 deploy-manager），避免误杀管理服务。
+     * 定位运行指定发布配置的全部 PID（自定义部署时可匹配多个 jar）。
+     * <p>
+     * 只按 jar 文件名匹配是不够的：生产与测试目录里可能放着同名的 jar，
+     * 两个进程的命令行完全一样，无法区分（会显示同一个 PID，停止时还会一起被杀）。
+     * 因此依次按下列依据收窄：
+     * <ol>
+     *   <li>进程工作目录在发布目录内（含 bin 等子目录；默认启动命令 {@code cd 发布目录 && java -jar ...} 即属此类）；</li>
+     *   <li>命令行里出现 jar 的绝对路径（用 {@code -classpath}/{@code -jar} 加绝对路径启动时）。</li>
+     * </ol>
+     * 两条都不命中就返回空——宁可显示「未运行」，也不能猜：一旦把另一套环境的进程当成自己的，
+     * 停止时就会误杀生产。确实无法靠进程信息识别的自定义命令，由 pid 文件兜底。
+     * 同时排除本管理服务自身的进程与执行脚本的 shell。
+     */
+    private String pidListCommand(DeployTarget t) {
+        String nameRe = ShellUtil.quote(jarRegex(t, false));
+        String pathRe = ShellUtil.quote(jarRegex(t, true));
+        String dir = ShellUtil.quote(ShellUtil.trimToEmpty(t.getRemoteDir()));
+        StringBuilder sb = new StringBuilder();
+        sb.append("DIR=").append(dir).append("; ");
+        // 目录可能是软链，同时比较逻辑路径与物理路径
+        sb.append("DIRP=$(cd \"$DIR\" 2>/dev/null && pwd -P); ");
+        sb.append("CAND=$(pgrep -f ").append(nameRe).append(" 2>/dev/null); ");
+        sb.append("OUT=''; ");
+        sb.append("for q in $CAND; do ");
+        // 排除执行脚本的 shell 自身（其命令行里就带着 jar 名）与本管理服务的进程
+        sb.append("[ \"$q\" = \"$$\" ] && continue; ");
+        sb.append("CMD=$(ps -o args= -p $q 2>/dev/null); ");
+        sb.append("case \"$CMD\" in ''|*pgrep*|*deploy-manager*) continue;; esac; ");
+        sb.append("CWD=$(readlink /proc/$q/cwd 2>/dev/null); ");
+        // 进程工作目录在发布目录内（含 bin 等子目录）即认为是该环境的进程
+        sb.append("IN=0; ");
+        sb.append("if [ -n \"$DIR\" ]; then case \"$CWD/\" in \"$DIR/\"*) IN=1;; esac; fi; ");
+        sb.append("if [ \"$IN\" = \"0\" ] && [ -n \"$DIRP\" ]; then case \"$CWD/\" in \"$DIRP/\"*) IN=1;; esac; fi; ");
+        sb.append("if [ \"$IN\" = \"1\" ]; then OUT=\"$OUT $q\"; continue; fi; ");
+        sb.append("if echo \"$CMD\" | grep -qE ").append(pathRe).append("; then OUT=\"$OUT $q\"; fi; ");
+        sb.append("done; ");
+        sb.append("echo $OUT");
+        return sb.toString();
+    }
+
+    /**
+     * 定位运行指定 jar 的进程 PID（多个时取第一个，用于展示与存活判断）。
      */
     private String pidCommand(DeployTarget t) {
-        String pattern = ShellUtil.quote(jarRegex(t, false));
-        String pathPattern = ShellUtil.quote(jarRegex(t, true));
-        return "p=$(pgrep -f " + pattern + " 2>/dev/null | grep -v 'deploy-manager' | head -1); "
-                + "if [ -z \"$p\" ]; then p=$(ps -ef 2>/dev/null | grep -E " + pattern
-                + " | grep -v grep | grep -v 'deploy-manager' | awk '{print $2}' | head -1); fi; "
-                + "if [ -z \"$p\" ]; then p=$(ps -ef 2>/dev/null | grep -E " + pathPattern
-                + " | grep -v grep | grep -v 'deploy-manager' | awk '{print $2}' | head -1); fi; "
-                + "echo \"$p\"";
+        return "pids=$(" + pidListCommand(t) + "); echo $pids | awk '{print $1}'";
     }
 
     // ---------------------------------------------------------------- 工具
