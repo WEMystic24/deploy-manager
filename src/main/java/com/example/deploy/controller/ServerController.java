@@ -17,10 +17,12 @@ import com.example.deploy.model.DeployTarget;
 import com.example.deploy.model.R;
 import com.example.deploy.model.ServerConfig;
 import com.example.deploy.service.DeployService;
+import com.example.deploy.service.DynamicCodeStore;
 import com.example.deploy.service.OperationLogService;
 import com.example.deploy.store.DeployTargetStore;
 import com.example.deploy.store.ServerConfigStore;
 import com.example.deploy.store.ServerGroupStore;
+import com.example.deploy.util.ShellUtil;
 
 /**
  * 服务器（账号密码等连接信息）配置管理接口。
@@ -35,6 +37,7 @@ public class ServerController {
     private final ServerGroupStore groupStore;
     private final DeployService deployService;
     private final OperationLogService operationLogService;
+    private final DynamicCodeStore dynamicCodeStore;
 
     /** 导入解析用：忽略未知字段，兼容旧导出文件中已抽离到发布配置的字段 */
     private final com.fasterxml.jackson.databind.ObjectMapper mapper =
@@ -42,12 +45,14 @@ public class ServerController {
                     .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     public ServerController(ServerConfigStore store, DeployTargetStore targetStore, ServerGroupStore groupStore,
-                            DeployService deployService, OperationLogService operationLogService) {
+                            DeployService deployService, OperationLogService operationLogService,
+                            DynamicCodeStore dynamicCodeStore) {
         this.store = store;
         this.targetStore = targetStore;
         this.groupStore = groupStore;
         this.deployService = deployService;
         this.operationLogService = operationLogService;
+        this.dynamicCodeStore = dynamicCodeStore;
     }
 
     @GetMapping
@@ -72,6 +77,10 @@ public class ServerController {
         long begin = System.currentTimeMillis();
         try {
             ServerConfig saved = store.save(config);
+            // 密码改动或关闭动态码后，之前输入的动态码不再适用：清掉，下次连接重新提示输入
+            if (ShellUtil.isNotBlank(config.getPassword()) || !saved.isDynamicCodeEnabled()) {
+                dynamicCodeStore.clear(saved.getId());
+            }
             // 所属文件夹若未注册，自动注册，保证下拉框/侧边栏一致
             if (saved.getGroup() != null && !saved.getGroup().trim().isEmpty()) {
                 groupStore.addIfAbsent(saved.getGroup().trim());
@@ -122,6 +131,7 @@ public class ServerController {
         long begin = System.currentTimeMillis();
         try {
             store.delete(id);
+            dynamicCodeStore.clear(id);
             // 级联删除该服务器下的全部发布配置
             targetStore.deleteByServer(id);
             operationLogService.record(existing, "SERVER_DELETE", true, System.currentTimeMillis() - begin, name);
@@ -136,6 +146,43 @@ public class ServerController {
     @PostMapping("/{id}/test")
     public R<Map<String, Object>> test(@PathVariable("id") String id) {
         return R.ok(deployService.testConnection(id));
+    }
+
+    /**
+     * 提交登录动态码（MFA）。动态码只保存在本服务内存中，连接时拼接到密码末尾使用，
+     * 不会写入 servers.json；默认 5 分钟有效，过期后前端会再次提示输入。
+     */
+    @PostMapping("/{id}/dynamic-code")
+    public R<Map<String, Object>> submitDynamicCode(@PathVariable("id") String id,
+                                                    @RequestBody Map<String, String> body) {
+        ServerConfig config = store.getForConnect(id);
+        if (!config.isDynamicCodeEnabled()) {
+            throw new IllegalArgumentException("服务器「" + config.getName() + "」未开启登录动态码");
+        }
+        dynamicCodeStore.put(id, body == null ? null : body.get("code"));
+        operationLogService.record(config, "DYNAMIC_CODE", true, 0, "已提交登录动态码（仅内存保存）");
+        Map<String, Object> res = new LinkedHashMap<String, Object>();
+        res.put("serverId", id);
+        res.put("required", Boolean.TRUE);
+        res.put("valid", Boolean.TRUE);
+        res.put("ttlSeconds", dynamicCodeStore.ttlSeconds());
+        return R.ok(res);
+    }
+
+    /** 查询动态码状态：required=是否开启了动态码，valid=当前是否已有可用动态码 */
+    @GetMapping("/{id}/dynamic-code")
+    public R<Map<String, Object>> dynamicCodeStatus(@PathVariable("id") String id) {
+        ServerConfig config = store.getSafe(id);
+        if (config == null) {
+            throw new IllegalArgumentException("服务器配置不存在");
+        }
+        Map<String, Object> res = new LinkedHashMap<String, Object>();
+        res.put("serverId", id);
+        res.put("serverName", config.getName());
+        res.put("required", Boolean.valueOf(config.isDynamicCodeEnabled()));
+        res.put("valid", Boolean.valueOf(config.isDynamicCodeEnabled() && dynamicCodeStore.hasValid(id)));
+        res.put("ttlSeconds", dynamicCodeStore.ttlSeconds());
+        return R.ok(res);
     }
 
     /**

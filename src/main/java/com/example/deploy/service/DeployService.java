@@ -29,6 +29,7 @@ import com.example.deploy.model.CommandResult;
 import com.example.deploy.model.DeployResult;
 import com.example.deploy.model.DeployTarget;
 import com.example.deploy.model.DeployTask;
+import com.example.deploy.model.DynamicCodeRequiredException;
 import com.example.deploy.model.ServerConfig;
 import com.example.deploy.model.StepStatus;
 import com.example.deploy.ssh.SshService;
@@ -58,6 +59,7 @@ public class DeployService {
     private final DeployTargetStore targetStore;
     private final SshService sshService;
     private final OperationLogService operationLogService;
+    private final DynamicCodeStore dynamicCodeStore;
 
     /** 后台执行线程池 */
     private final ExecutorService executor = Executors.newCachedThreadPool();
@@ -67,12 +69,14 @@ public class DeployService {
     private final ConcurrentHashMap<String, String> lastTaskByTarget = new ConcurrentHashMap<String, String>();
 
     public DeployService(DeployProperties properties, ServerConfigStore store, DeployTargetStore targetStore,
-                         SshService sshService, OperationLogService operationLogService) {
+                         SshService sshService, OperationLogService operationLogService,
+                         DynamicCodeStore dynamicCodeStore) {
         this.properties = properties;
         this.store = store;
         this.targetStore = targetStore;
         this.sshService = sshService;
         this.operationLogService = operationLogService;
+        this.dynamicCodeStore = dynamicCodeStore;
     }
 
     // ---------------------------------------------------------------- 任务查询
@@ -1459,6 +1463,9 @@ public class DeployService {
             }
             operationLogService.record(config, "TEST", true, System.currentTimeMillis() - begin, "连接成功");
             return map;
+        } catch (DynamicCodeRequiredException e) {
+            // 交给前端弹窗输入动态码后重试，不当作「测试失败」返回
+            throw e;
         } catch (Exception e) {
             map.put("success", Boolean.FALSE);
             map.put("message", e.getMessage());
@@ -1477,7 +1484,32 @@ public class DeployService {
         if (target == null) {
             throw new IllegalArgumentException("发布配置不存在");
         }
-        return store.getForConnect(target.getServerId());
+        ServerConfig config = store.getForConnect(target.getServerId());
+        requireDynamicCode(config);
+        return config;
+    }
+
+    /**
+     * 开启动态码的服务器：只有「真的要新建连接」时才要求输入动态码。
+     *
+     * <p>满足以下任一条件即放行：已经有有效动态码；连接池里已有可复用的存活连接（不会重新认证）。</p>
+     *
+     * <p>放在接口线程里（建任务之前）检查，前端拿到的就是 428 而不是「任务已创建、执行时才失败」，
+     * 这样才能在真正连接前弹窗要求输入动态码。后台任务线程里不会走到这里。</p>
+     */
+    private void requireDynamicCode(ServerConfig config) {
+        if (!config.isDynamicCodeEnabled()) {
+            return;
+        }
+        if (dynamicCodeStore.hasValid(config.getId())) {
+            return;
+        }
+        // 连接池里还有可用连接（一直在操作、没有被空闲回收）时，本次操作直接复用，不会重新认证，
+        // 因此不需要动态码。否则会出现「明明还连着，只是动态码缓存过了 5 分钟就弹窗要码」的打扰。
+        if (sshService.hasLiveConnection(config)) {
+            return;
+        }
+        throw new DynamicCodeRequiredException(config.getId(), config.getName());
     }
 
     public DeployTarget resolveTarget(String targetId) {

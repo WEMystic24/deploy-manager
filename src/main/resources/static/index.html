@@ -283,6 +283,11 @@
         <div class="hint">密码加密后保存到 data/servers.json</div>
       </div>
       <div class="field">
+        <label>登录动态码</label>
+        <label class="check"><input type="checkbox" id="f-dynamicCodeEnabled"> 开启动态码（MFA / 二次验证）</label>
+        <div class="hint" id="dynamicCodeTip">开启后，首次连接该服务器前会弹窗要求输入动态码，提交后拼接到密码末尾一起用于 SSH 登录；动态码不写入配置文件，仅在服务内存中保留 5 分钟。</div>
+      </div>
+      <div class="field">
         <label>私钥路径</label>
         <input type="text" id="f-privateKeyPath" placeholder="/Users/me/.ssh/id_rsa（认证方式选私钥时填写）">
       </div>
@@ -321,6 +326,28 @@
     <div class="modal-foot">
       <button id="btnCancel">取消</button>
       <button class="primary" id="btnSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 登录动态码输入弹窗：服务器开启动态码时，首次连接前弹出 -->
+<div class="modal-mask" id="otpMask">
+  <div class="modal modal-otp">
+    <div class="modal-head">
+      <span>输入登录动态码</span>
+    </div>
+    <div class="modal-body">
+      <div class="hint" id="otpServerTip" style="margin-bottom:12px"></div>
+      <div class="field">
+        <label>动态码</label>
+        <input type="text" id="otpInput" autocomplete="one-time-code" inputmode="numeric" maxlength="16"
+               placeholder="如 123456">
+        <div class="hint">动态码只会拼接到登录密码后用于本次 SSH 连接，不会保存到配置文件；5 分钟内无需重复输入。</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnOtpCancel">取消</button>
+      <button class="primary" id="btnOtpOk">确定并连接</button>
     </div>
   </div>
 </div>
@@ -811,6 +838,6 @@
   </div>
 </div>
 
-<script src="js/app.js?v=6"></script>
+<script src="js/app.js?v=7"></script>
 </body>
 </html>

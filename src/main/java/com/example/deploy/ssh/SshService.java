@@ -18,7 +18,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import com.example.deploy.config.DeployProperties;
+import com.example.deploy.model.DynamicCodeRequiredException;
 import com.example.deploy.model.ServerConfig;
+import com.example.deploy.service.DynamicCodeStore;
 import com.example.deploy.service.OperationLogService;
 import com.example.deploy.util.ShellUtil;
 import com.jcraft.jsch.JSch;
@@ -52,6 +54,7 @@ public class SshService {
 
     private final DeployProperties properties;
     private final OperationLogService operationLogService;
+    private final DynamicCodeStore dynamicCodeStore;
 
     /** 连接池：key = 账号@主机:端口 */
     private final ConcurrentHashMap<String, Pooled> pool = new ConcurrentHashMap<>();
@@ -62,9 +65,11 @@ public class SshService {
 
     private ScheduledExecutorService cleaner;
 
-    public SshService(DeployProperties properties, OperationLogService operationLogService) {
+    public SshService(DeployProperties properties, OperationLogService operationLogService,
+                      DynamicCodeStore dynamicCodeStore) {
         this.properties = properties;
         this.operationLogService = operationLogService;
+        this.dynamicCodeStore = dynamicCodeStore;
     }
 
     /**
@@ -110,6 +115,21 @@ public class SshService {
                 properties.getStagingDir(), new PoolCallback(key, pooled), pooled.suLogged);
     }
 
+    /**
+     * 该服务器当前是否已有可直接复用的存活连接（指纹一致、未断开）。
+     *
+     * <p>动态码只在「新建连接」时参与认证，复用已有连接时不会再校验。
+     * 所以判断「要不要再向用户要一次动态码」时应当看本方法，而不能只看动态码缓存是否还没过期：
+     * 只要连接一直活着（持续操作、心跳保活），即使动态码缓存过了有效期，本次操作也不需要重新登录。</p>
+     */
+    public boolean hasLiveConnection(ServerConfig config) {
+        if (config == null || ShellUtil.isBlank(config.getHost()) || ShellUtil.isBlank(config.getUsername())) {
+            return false;
+        }
+        Pooled pooled = pool.get(poolKey(config));
+        return pooled != null && pooled.isAlive() && fingerprint(config).equals(pooled.fingerprint);
+    }
+
     /** 主动断开并移除某台服务器的缓存连接（改密码、删除服务器等场景可调用） */
     public void invalidate(ServerConfig config) {
         if (config == null) {
@@ -139,12 +159,16 @@ public class SshService {
                 }
             }
 
+            // 动态码：拼接到密码末尾一起做认证（MFA 常见形式）。没有有效动态码时快速失败，
+            // 由前端弹窗让用户输入后重试，避免先发起一次注定失败的登录。
+            String password = effectivePassword(config);
+
             Session session = jsch.getSession(config.getUsername().trim(),
                     config.getHost().trim(), config.effectivePort());
             if (!config.usePrivateKey()) {
-                session.setPassword(config.getPassword());
+                session.setPassword(password);
             }
-            session.setUserInfo(new PasswordUserInfo(config.getPassword()));
+            session.setUserInfo(new PasswordUserInfo(password));
 
             Properties cfg = new Properties();
             // 免去首次连接的 host key 交互确认
@@ -161,19 +185,53 @@ public class SshService {
             session.connect(properties.getConnectTimeoutSeconds() * 1000);
 
             long cost = System.currentTimeMillis() - begin;
-            operationLogService.record(config, "CONNECT", true, cost, "登录账号 " + config.getUsername());
-            log.info("SSH 连接成功 {}@{}:{} ({}ms)", config.getUsername(), config.getHost(),
-                    config.effectivePort(), cost);
+            operationLogService.record(config, "CONNECT", true, cost, "登录账号 " + config.getUsername()
+                    + (config.isDynamicCodeEnabled() ? "（含动态码）" : ""));
+            log.info("SSH 连接成功 {}@{}:{}{} ({}ms)", config.getUsername(), config.getHost(),
+                    config.effectivePort(), config.isDynamicCodeEnabled() ? "（动态码）" : "", cost);
             return session;
+        } catch (DynamicCodeRequiredException e) {
+            // 缺少动态码不是连接失败，直接上抛给前端弹窗，不记失败日志、不进入熔断
+            throw e;
         } catch (IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
             long cost = System.currentTimeMillis() - begin;
+            // 动态码错误/过期的典型表现是认证失败：清掉已存的动态码，下次连接重新提示输入
+            if (config.isDynamicCodeEnabled() && looksLikeAuthFailure(e.getMessage())) {
+                dynamicCodeStore.clear(config.getId());
+                log.info("服务器 {} 认证失败，已清除缓存的动态码，下次连接需重新输入", config.getId());
+            }
             operationLogService.record(config, "CONNECT", false, cost, e.getMessage());
             log.warn("连接服务器失败 {}@{}:{} -> {}", config.getUsername(), config.getHost(),
                     config.effectivePort(), e.getMessage());
             throw new IllegalStateException("连接服务器失败: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * 实际用于认证的密码：开启动态码时把动态码拼接到密码末尾。
+     * 没有有效动态码则抛 {@link DynamicCodeRequiredException}，由前端弹窗输入后重试。
+     */
+    private String effectivePassword(ServerConfig config) {
+        String password = config.getPassword() == null ? "" : config.getPassword();
+        if (!config.isDynamicCodeEnabled()) {
+            return password;
+        }
+        String code = dynamicCodeStore.get(config.getId());
+        if (ShellUtil.isBlank(code)) {
+            throw new DynamicCodeRequiredException(config.getId(), config.getName());
+        }
+        return password + code;
+    }
+
+    /** 认证失败判定（JSch 报 "Auth fail" / "Auth cancel"，部分服务器报 "auth failed"） */
+    private static boolean looksLikeAuthFailure(String message) {
+        if (message == null) {
+            return false;
+        }
+        String m = message.toLowerCase();
+        return m.contains("auth") || m.contains("密码") || m.contains("permission denied");
     }
 
     private Object lockOf(String key) {

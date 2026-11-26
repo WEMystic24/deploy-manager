@@ -372,6 +372,9 @@ public class ServerConfigStore {
         if (c.usePrivateKey() && ShellUtil.isBlank(c.getPrivateKeyPath())) {
             throw new IllegalArgumentException("使用私钥登录时必须填写私钥文件路径");
         }
+        if (Boolean.TRUE.equals(c.getDynamicCodeEnabled()) && c.usePrivateKey()) {
+            throw new IllegalArgumentException("动态码作用于密码认证，使用私钥登录时请关闭「登录动态码」");
+        }
         if (isNew && Boolean.TRUE.equals(c.getSuEnabled()) && ShellUtil.isBlank(c.getSuPassword())) {
             throw new IllegalArgumentException("启用 su 切换用户时必须填写 su 密码");
         }

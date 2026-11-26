@@ -35,7 +35,7 @@
     }, type === 'err' ? 5000 : 2600);
   }
 
-  function request(url, options) {
+  function request(url, options, retried) {
     var opt = options || {};
     return fetch(url, opt).then(function (res) {
       if (res.status === 401) {
@@ -43,6 +43,16 @@
       }
       return res.json();
     }).then(function (json) {
+      // 428：服务器开启了登录动态码但还没有可用动态码 → 弹窗输入后自动重试一次
+      if (json.code === 428) {
+        var d = json.data || {};
+        if (retried) {
+          throw new Error(json.message || '动态码无效，请重新输入');
+        }
+        return ensureDynamicCode(d.serverId, d.serverName).then(function () {
+          return request(url, options, true);
+        });
+      }
       if (json.code !== 0) {
         throw new Error(json.message || '请求失败');
       }
@@ -64,6 +74,132 @@
 
   function post(url) {
     return request(url, { method: 'POST' });
+  }
+
+  // ------------------------------------------------------------ 登录动态码（MFA）
+
+  /** 正在询问动态码的服务器：同一台服务器并发触发时只弹一次窗 */
+  var otpPrompts = {};
+
+  /**
+   * 确保某台服务器已有可用动态码：服务端已有则直接返回；没有则弹窗让用户输入，
+   * 提交成功后由调用方重试原请求（那时才会真正发起 SSH 连接）。
+   */
+  function ensureDynamicCode(serverId, serverName) {
+    if (!serverId) {
+      return Promise.reject(new Error('缺少服务器标识，无法输入动态码'));
+    }
+    if (otpPrompts[serverId]) {
+      return otpPrompts[serverId];
+    }
+    var p = getJson('/api/servers/' + serverId + '/dynamic-code').then(function (st) {
+      st = st || {};
+      // 已有可用动态码；或该服务器其实没开动态码（并发期间被关掉）→ 直接重试即可
+      if (st.valid || st.required === false) {
+        return true;
+      }
+      return askDynamicCode(serverId, serverName || st.serverName || '');
+    }).then(function (r) {
+      delete otpPrompts[serverId];
+      return r;
+    }, function (e) {
+      delete otpPrompts[serverId];
+      throw e;
+    });
+    otpPrompts[serverId] = p;
+    return p;
+  }
+
+  /** 多台服务器同时缺动态码时排队逐个弹窗，避免同一个弹窗被并发覆盖 */
+  var otpQueue = Promise.resolve();
+
+  /** 动态码输入弹窗：提交成功后 resolve，取消则 reject（多台服务器时串行询问） */
+  function askDynamicCode(serverId, serverName) {
+    var run = function () {
+      return askDynamicCodeOnce(serverId, serverName);
+    };
+    var p = otpQueue.then(run, run);
+    otpQueue = p.then(function () { /* 忽略结果，只保证顺序 */ }, function () { /* 取消也要继续下一个 */ });
+    return p;
+  }
+
+  function askDynamicCodeOnce(serverId, serverName) {
+    return new Promise(function (resolve, reject) {
+      var mask = $('otpMask');
+      var input = $('otpInput');
+      var okBtn = $('btnOtpOk');
+      var cancelBtn = $('btnOtpCancel');
+      $('otpServerTip').textContent = serverName
+        ? '服务器「' + serverName + '」开启了登录动态码，请输入当前动态码后继续。'
+        : '请输入当前动态码后继续。';
+      input.value = '';
+      okBtn.disabled = false;
+      mask.classList.add('show');
+      setTimeout(function () { input.focus(); }, 30);
+
+      function unbind() {
+        mask.classList.remove('show');
+        okBtn.onclick = null;
+        cancelBtn.onclick = null;
+        input.onkeydown = null;
+      }
+
+      function submit() {
+        var code = input.value.trim();
+        if (!code) {
+          toast('请输入动态码', 'err');
+          input.focus();
+          return;
+        }
+        okBtn.disabled = true;
+        okBtn.textContent = '提交中...';
+        postJson('/api/servers/' + serverId + '/dynamic-code', { code: code }).then(function () {
+          unbind();
+          okBtn.textContent = '确定并连接';
+          toast('动态码已提交', 'ok');
+          resolve(true);
+        }).catch(function (e) {
+          okBtn.disabled = false;
+          okBtn.textContent = '确定并连接';
+          toast(e.message, 'err');
+        });
+      }
+
+      okBtn.onclick = submit;
+      cancelBtn.onclick = function () {
+        unbind();
+        reject(new Error('已取消输入动态码，操作未执行'));
+      };
+      input.onkeydown = function (ev) {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          submit();
+        } else if (ev.key === 'Escape') {
+          ev.preventDefault();
+          cancelBtn.onclick();
+        }
+      };
+    });
+  }
+
+  /** 私钥登录不使用密码，动态码开关置灰并自动关闭 */
+  function syncDynamicCodeUI() {
+    var cb = $('f-dynamicCodeEnabled');
+    var tip = $('dynamicCodeTip');
+    if (!cb) {
+      return;
+    }
+    var isKey = $('f-authType').value === 'PRIVATE_KEY';
+    cb.disabled = isKey;
+    if (isKey) {
+      cb.checked = false;
+    }
+    if (tip && isKey) {
+      tip.textContent = '当前为私钥登录，不使用密码，动态码仅适用于账号密码登录。';
+    } else if (tip) {
+      tip.textContent = '开启后，首次连接该服务器前会弹窗要求输入动态码，提交后拼接到密码末尾一起用于 SSH 登录；'
+        + '动态码不写入配置文件，仅在服务内存中保留 5 分钟。';
+    }
   }
 
   function busy(btn, on) {
@@ -271,7 +407,8 @@
     li.innerHTML = '<div class=\'name\'><span class=\'dot\' id=\'dot-' + s.id + '\'></span>'
       + '<span class=\'nm\'>' + escapeHtml(s.name) + '</span>'
       + deployBadge + delBtn + cloneBtn + '</div>'
-      + '<div class=\'meta\'>' + escapeHtml(s.username + '@' + s.host + ':' + (s.port || 22)) + '</div>';
+      + '<div class=\'meta\'>' + escapeHtml(s.username + '@' + s.host + ':' + (s.port || 22))
+      + (s.dynamicCodeEnabled ? ' · 动态码' : '') + '</div>';
     li.onclick = function () {
       select(s.id);
     };
@@ -424,6 +561,7 @@
         + ' (' + (currentTarget.remoteDir || '未设目录') + '/' + (currentTarget.jarName || '未设 jar') + ')');
     }
     $('svrMeta').innerHTML = escapeHtml(current.username + '@' + current.host + ':' + (current.port || 22))
+      + (current.dynamicCodeEnabled ? ' &nbsp;|&nbsp; <span class="tag warn">动态码</span>' : '')
       + (current.remark ? ' &nbsp;|&nbsp; ' + escapeHtml(current.remark) : '')
       + curDesc;
   }
@@ -2212,7 +2350,12 @@
   }
 
   /** 通过 XHR 上传（带浏览器→服务器的真实进度回调 onProgress(pct,loaded,total,speed)），resolve 服务端返回的 data */
-  function xhrUpload(url, fd, onProgress) {
+  /**
+   * 上传（XHR）。失败分两类：
+   *  - code=428：服务器开启动态码但还没有可用动态码 → 弹窗输入后重新上传同一份表单；
+   *  - 其它：直接把服务端提示抛给调用方。
+   */
+  function xhrUpload(url, fd, onProgress, retried) {
     return new Promise(function (resolve, reject) {
       var xhr = new XMLHttpRequest();
       xhr.open('POST', url);
@@ -2232,6 +2375,13 @@
       xhr.onload = function () {
         try {
           var json = JSON.parse(xhr.responseText);
+          if (json.code === 428 && !retried) {
+            var d = json.data || {};
+            ensureDynamicCode(d.serverId, d.serverName).then(function () {
+              resolve(xhrUpload(url, fd, onProgress, true));
+            }).catch(reject);
+            return;
+          }
           if (json.code !== 0) {
             reject(new Error(json.message || '上传失败'));
             return;
@@ -2867,10 +3017,12 @@
       el.value = v === null || v === undefined ? '' : v;
     });
     $('f-suEnabled').checked = !!(server && server.suEnabled);
+    $('f-dynamicCodeEnabled').checked = !!(server && server.dynamicCodeEnabled);
     if (!server) {
       $('f-port').value = 22;
       $('f-authType').value = 'PASSWORD';
     }
+    syncDynamicCodeUI();
     $('f-password').value = '';
     $('f-passphrase').value = '';
     resetPwdEyes();
@@ -2953,6 +3105,7 @@
     });
     body.port = parseInt(body.port, 10) || 22;
     body.suEnabled = $('f-suEnabled').checked;
+    body.dynamicCodeEnabled = $('f-dynamicCodeEnabled').checked;
     var gsel = $('f-group');
     body.group = gsel ? gsel.value : '';
     busy(btn, true);
@@ -4026,6 +4179,7 @@
     $('btnSave').onclick = function () {
       saveServer(this);
     };
+    $('f-authType').onchange = syncDynamicCodeUI;
     $('btnAddTarget').onclick = function () {
       openTargetModal(null);
     };

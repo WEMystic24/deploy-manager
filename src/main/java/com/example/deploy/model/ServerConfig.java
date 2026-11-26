@@ -32,6 +32,12 @@ public class ServerConfig {
      */
     private String password;
 
+    /**
+     * 是否开启动态码（MFA）：开启后首次连接该服务器前，前端会弹窗要求输入动态码，
+     * 动态码拼接到密码末尾用于 SSH 认证；动态码本身不落盘，只在本服务内存中临时保存。
+     */
+    private Boolean dynamicCodeEnabled = Boolean.FALSE;
+
     /** 认证方式：PASSWORD（默认） / PRIVATE_KEY */
     private String authType = "PASSWORD";
 
@@ -91,6 +97,11 @@ public class ServerConfig {
         return Boolean.TRUE.equals(suEnabled);
     }
 
+    /** 是否开启登录动态码（MFA） */
+    public boolean isDynamicCodeEnabled() {
+        return Boolean.TRUE.equals(dynamicCodeEnabled);
+    }
+
     /** su 目标用户，留空默认 root */
     public String effectiveSuUser() {
         return isNotBlank(suUser) ? suUser.trim() : "root";
@@ -115,6 +126,7 @@ public class ServerConfig {
         c.port = this.port;
         c.username = this.username;
         c.password = this.password;
+        c.dynamicCodeEnabled = this.dynamicCodeEnabled;
         c.authType = this.authType;
         c.privateKeyPath = this.privateKeyPath;
         c.passphrase = this.passphrase;
@@ -189,6 +201,14 @@ public class ServerConfig {
 
     public void setAuthType(String authType) {
         this.authType = authType;
+    }
+
+    public Boolean getDynamicCodeEnabled() {
+        return dynamicCodeEnabled;
+    }
+
+    public void setDynamicCodeEnabled(Boolean dynamicCodeEnabled) {
+        this.dynamicCodeEnabled = dynamicCodeEnabled;
     }
 
     public String getPrivateKeyPath() {

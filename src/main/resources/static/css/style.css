@@ -453,6 +453,12 @@ button:disabled {
   border-color: #fecaca;
 }
 
+.tag.warn {
+  color: var(--warn);
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
 .dot {
   width: 8px;
   height: 8px;
@@ -696,6 +702,17 @@ table.list th {
   border-radius: 10px;
   box-shadow: 0 12px 32px rgba(15, 23, 42, .18);
   overflow: hidden;
+}
+
+/* 登录动态码弹窗：内容少，固定窄一些 */
+.modal.modal-otp {
+  width: 440px;
+  max-width: 92vw;
+}
+
+/* 动态码弹窗只有一个输入框，不用两列栅格 */
+.modal.modal-otp .modal-body {
+  display: block;
 }
 
 .modal-head {
