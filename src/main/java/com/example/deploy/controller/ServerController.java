@@ -1,6 +1,7 @@
 package com.example.deploy.controller;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -34,6 +35,11 @@ public class ServerController {
     private final ServerGroupStore groupStore;
     private final DeployService deployService;
     private final OperationLogService operationLogService;
+
+    /** 导入解析用：忽略未知字段，兼容旧导出文件中已抽离到发布配置的字段 */
+    private final com.fasterxml.jackson.databind.ObjectMapper mapper =
+            new com.fasterxml.jackson.databind.ObjectMapper()
+                    .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     public ServerController(ServerConfigStore store, DeployTargetStore targetStore, ServerGroupStore groupStore,
                             DeployService deployService, OperationLogService operationLogService) {
@@ -168,16 +174,26 @@ public class ServerController {
     }
 
     /**
-     * 导出全部服务器配置为 JSON（密码以 ENC: 密文形式随出，可直接再次导入还原）。
-     * 由前端触发浏览器下载。
+     * 导出全部配置为 JSON（由前端触发浏览器下载）：
+     * 服务器连接配置（密码以 ENC: 密文随出，可直接再次导入还原）+ 每台服务器的全部发布配置 + 文件夹列表。
+     * 旧版本只导出服务器连接信息，导致跨机器导入后发布配置（jar 目录 / jar 名称等）丢失，此版本一并打包。
      */
     @GetMapping("/export")
-    public R<List<ServerConfig>> exportAll() {
+    public R<Map<String, Object>> exportAll() {
         long begin = System.currentTimeMillis();
         try {
-            List<ServerConfig> list = store.listRaw();
-            operationLogService.record(null, "EXPORT", true, System.currentTimeMillis() - begin, "导出 " + list.size() + " 台服务器");
-            return R.ok(list);
+            Map<String, Object> data = new LinkedHashMap<String, Object>();
+            List<ServerConfig> servers = store.listRaw();
+            List<DeployTarget> targets = targetStore.listRaw();
+            List<String> groups = groupStore.list();
+            data.put("version", 2);
+            data.put("exportTime", new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()));
+            data.put("servers", servers);
+            data.put("targets", targets);
+            data.put("groups", groups);
+            operationLogService.record(null, "EXPORT", true, System.currentTimeMillis() - begin,
+                    "导出 " + servers.size() + " 台服务器 / " + targets.size() + " 个发布配置 / " + groups.size() + " 个文件夹");
+            return R.ok(data);
         } catch (Exception e) {
             operationLogService.record(null, "EXPORT", false, System.currentTimeMillis() - begin, e.getMessage());
             throw e;
@@ -185,33 +201,173 @@ public class ServerController {
     }
 
     /**
-     * 从 JSON 数组导入服务器配置，按 host+port 合并：
-     * 已存在则更新，不存在则新增。导入后每台服务器确保有默认发布配置。返回新增/更新数量与失败项。
+     * 导入配置。支持两种格式：
+     * <ul>
+     *   <li>v2 导出文件：{@code { "servers": [...], "targets": [...], "groups": [...] }}，
+     *       发布配置与文件夹随服务器一并还原（服务器 id 按映射转换）；</li>
+     *   <li>旧版纯数组：{@code [ ServerConfig, ... ]}，服务器条目里的旧发布字段
+     *       （remoteDir / jarName / jvmOpts 等）自动迁移为该服务器的发布配置。</li>
+     * </ul>
+     * 服务器按 id（其次 名称+host+port）合并：已存在则更新，不存在则新增；
+     * 同一台主机上的多个应用（多条配置）不再被互相吞并。
      */
     @PostMapping("/import")
-    public R<Map<String, Object>> importAll(@RequestBody List<ServerConfig> configs) {
+    public R<Map<String, Object>> importAll(@RequestBody com.fasterxml.jackson.databind.JsonNode body) {
         long begin = System.currentTimeMillis();
         try {
-            Map<String, Object> res = store.importServers(configs);
-            // 导入的服务器确保有默认发布配置（发布信息在新版本中独立维护）
-            if (configs != null) {
-                for (ServerConfig c : configs) {
-                    if (c == null) {
+            List<ServerConfig> configs = new ArrayList<ServerConfig>();
+            List<DeployTarget> targets = new ArrayList<DeployTarget>();
+            List<String> groups = null;
+            boolean legacyFormat = false;
+            if (body != null && body.isArray()) {
+                // 旧版纯数组格式
+                legacyFormat = true;
+                for (com.fasterxml.jackson.databind.JsonNode node : body) {
+                    if (node == null || !node.isObject()) {
                         continue;
                     }
-                    ServerConfig existing = store.findBySignature(c);
-                    if (existing != null) {
-                        targetStore.ensureDefault(existing.getId(), existing.getName());
+                    configs.add(mapper.convertValue(node, ServerConfig.class));
+                    DeployTarget legacy = legacyTargetOf(node);
+                    if (legacy != null) {
+                        targets.add(legacy);
+                    }
+                }
+            } else if (body != null && body.isObject()) {
+                com.fasterxml.jackson.databind.JsonNode serversNode = body.path("servers");
+                if (!serversNode.isArray()) {
+                    throw new IllegalArgumentException("文件格式不正确：应为服务器配置数组，或包含 servers 字段的导出文件");
+                }
+                configs = mapper.convertValue(serversNode,
+                        new com.fasterxml.jackson.core.type.TypeReference<List<ServerConfig>>() {
+                        });
+                com.fasterxml.jackson.databind.JsonNode targetsNode = body.path("targets");
+                if (targetsNode.isArray()) {
+                    targets = mapper.convertValue(targetsNode,
+                            new com.fasterxml.jackson.core.type.TypeReference<List<DeployTarget>>() {
+                            });
+                }
+                com.fasterxml.jackson.databind.JsonNode groupsNode = body.path("groups");
+                if (groupsNode.isArray()) {
+                    groups = mapper.convertValue(groupsNode,
+                            new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {
+                            });
+                }
+            } else {
+                throw new IllegalArgumentException("文件内容为空");
+            }
+
+            // 1) 导入服务器，记录 旧id → 新id 映射与逐条最终 id
+            Map<String, String> idMapping = new LinkedHashMap<String, String>();
+            List<String> finalIds = new ArrayList<String>();
+            Map<String, Object> res = store.importServers(configs, idMapping, finalIds);
+
+            // 2) 注册文件夹（v2 显式导出的顺序在前；服务器条目里的 group 兜底注册）
+            if (groups != null) {
+                for (String g : groups) {
+                    try {
+                        if (g != null && !g.trim().isEmpty()) {
+                            groupStore.addIfAbsent(g.trim());
+                        }
+                    } catch (Exception e) {
+                        logImportWarning("文件夹「" + g + "」注册失败: " + e.getMessage());
                     }
                 }
             }
-            int errCount = res.get("errors") instanceof List ? ((List<?>) res.get("errors")).size() : 0;
+            for (ServerConfig c : configs) {
+                if (c != null && c.getGroup() != null && !c.getGroup().trim().isEmpty()) {
+                    try {
+                        groupStore.addIfAbsent(c.getGroup().trim());
+                    } catch (Exception e) {
+                        logImportWarning("文件夹「" + c.getGroup() + "」注册失败: " + e.getMessage());
+                    }
+                }
+            }
+
+            // 3) 还原发布配置：旧格式按数组位置关联服务器，v2 按 id 映射关联
+            @SuppressWarnings("unchecked")
+            List<String> errors = (List<String>) res.get("errors");
+            if (errors == null) {
+                errors = new ArrayList<String>();
+            }
+            List<DeployTarget> targetsToImport = targets;
+            if (legacyFormat) {
+                // 旧格式数组：targets 与 configs 同序，serverId 改为对应导入后的最终 id
+                targetsToImport = new ArrayList<DeployTarget>();
+                for (int i = 0; i < targets.size(); i++) {
+                    DeployTarget t = targets.get(i);
+                    String fid = i < finalIds.size() ? finalIds.get(i) : null;
+                    if (fid == null) {
+                        errors.add((t.getName() != null ? t.getName() : "发布配置") + ": 所属服务器导入失败，跳过");
+                        continue;
+                    }
+                    DeployTarget copy = t.copy();
+                    copy.setServerId(fid);
+                    targetsToImport.add(copy);
+                }
+            }
+            Map<String, Object> targetRes = targetStore.importTargets(targetsToImport, idMapping, errors);
+            int targetCount = targetRes.get("imported") instanceof Integer ? (Integer) targetRes.get("imported") : 0;
+
+            // 4) 没有任何发布配置的服务器兜底创建默认发布配置，保证发布入口可用
+            for (String id : finalIds) {
+                if (id != null) {
+                    ServerConfig s = store.getSafe(id);
+                    targetStore.ensureDefault(id, s == null ? null : s.getName());
+                }
+            }
+
+            res.put("targets", targetCount);
+            res.put("errors", errors);
+            int errCount = errors.size();
             operationLogService.record(null, "IMPORT", true, System.currentTimeMillis() - begin,
-                    "新增 " + res.get("added") + " / 更新 " + res.get("updated") + " / 失败 " + errCount);
+                    "新增 " + res.get("added") + " / 更新 " + res.get("updated")
+                            + " / 发布配置 " + targetCount + " / 失败 " + errCount);
             return R.ok(res);
         } catch (Exception e) {
             operationLogService.record(null, "IMPORT", false, System.currentTimeMillis() - begin, e.getMessage());
             throw e;
         }
+    }
+
+    private void logImportWarning(String message) {
+        // 导入过程中的可忽略告警（如文件夹名称非法），不影响整体导入结果
+        org.slf4j.LoggerFactory.getLogger(ServerController.class).warn("导入配置告警: {}", message);
+    }
+
+    /**
+     * 旧版纯数组格式：服务器条目里的发布字段（jarName 等）迁移为发布配置。
+     * 字段含义与 DataMigration 的启动迁移逻辑保持一致。
+     */
+    private DeployTarget legacyTargetOf(com.fasterxml.jackson.databind.JsonNode node) {
+        String jarName = node.path("jarName").asText("");
+        if (jarName.trim().isEmpty()) {
+            return null;
+        }
+        DeployTarget t = new DeployTarget();
+        t.setServerId(node.path("id").asText(null));
+        t.setName(legacyTargetName(jarName, node.path("name").asText("")));
+        t.setRemoteDir(node.path("remoteDir").asText(null));
+        t.setJarName(jarName);
+        t.setJavaCmd(node.path("javaCmd").asText("java"));
+        t.setJvmOpts(node.path("jvmOpts").asText(null));
+        t.setAppArgs(node.path("appArgs").asText(null));
+        t.setInfoLogFile(node.path("logFile").asText(null));
+        t.setPidFile(node.path("pidFile").asText(null));
+        t.setBackupDir(node.path("backupDir").asText(null));
+        t.setPreStartCmd(node.path("preStartCmd").asText(null));
+        t.setPostStartCmd(node.path("postStartCmd").asText(null));
+        return t;
+    }
+
+    private static String legacyTargetName(String jarName, String serverName) {
+        String name = jarName.trim();
+        int i = name.toLowerCase().lastIndexOf(".jar");
+        if (i > 0) {
+            name = name.substring(0, i);
+        }
+        if (!name.trim().isEmpty()) {
+            return name;
+        }
+        return serverName == null || serverName.trim().isEmpty() ? "默认发布配置" : serverName;
     }
 }

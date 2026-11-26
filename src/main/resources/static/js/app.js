@@ -2985,14 +2985,17 @@
 
   // ------------------------------------------------------------ 配置导入 / 导出（JSON）
 
-  /** 导出全部服务器配置为 JSON 文件下载（密码以 ENC: 密文形式随出，可直接再次导入还原） */
+  /** 导出全部配置为 JSON 文件下载：服务器 + 各服务器的发布配置 + 文件夹（密码以 ENC: 密文形式随出，可直接再次导入还原） */
   function exportConfig() {
-    getJson('/api/servers/export').then(function (list) {
-      if (!list || list.length === 0) {
+    getJson('/api/servers/export').then(function (data) {
+      // 兼容后端旧版返回的纯数组（仅服务器）
+      var payload = Array.isArray(data) ? { version: 1, servers: data } : data;
+      var servers = payload.servers || [];
+      if (!servers.length) {
         toast('当前没有可导出的服务器配置', 'err');
         return;
       }
-      var blob = new Blob([JSON.stringify(list, null, 2)], { type: 'application/json' });
+      var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
       var url = URL.createObjectURL(blob);
       var a = document.createElement('a');
       a.href = url;
@@ -3001,30 +3004,31 @@
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      toast('已导出 ' + list.length + ' 台服务器配置（含发布配置）', 'ok');
+      toast('已导出 ' + servers.length + ' 台服务器 / ' + ((payload.targets || []).length) +
+        ' 个发布配置 / ' + ((payload.groups || []).length) + ' 个文件夹', 'ok');
     }).catch(function (e) {
       toast(e.message, 'err');
     });
   }
 
-  /** 导入 JSON 文件中的服务器配置（按 host+port+jar+remoteDir 合并） */
+  /** 导入 JSON 文件中的配置：支持 v2 完整导出文件（含发布配置与文件夹）与旧版纯服务器数组 */
   function importConfig(file) {
     if (!file) {
       return;
     }
     var reader = new FileReader();
     reader.onload = function () {
-      var arr;
+      var payload;
       try {
-        arr = JSON.parse(reader.result);
-        if (!Array.isArray(arr)) {
-          throw new Error('文件格式不正确：应为服务器配置数组');
+        payload = JSON.parse(reader.result);
+        if (!Array.isArray(payload) && !(payload && Array.isArray(payload.servers))) {
+          throw new Error('文件格式不正确：应为服务器配置数组，或包含 servers 字段的导出文件');
         }
       } catch (e) {
         toast('解析失败: ' + e.message, 'err');
         return;
       }
-      postJson('/api/servers/import', arr).then(function (res) {
+      postJson('/api/servers/import', payload).then(function (res) {
         var msg = '导入完成：新增 ' + res.added + ' 台，更新 ' + res.updated + ' 台，发布配置 ' + (res.targets || 0) + ' 个';
         if (res.errors && res.errors.length) {
           msg += '；' + res.errors.length + ' 条失败（详见控制台）';

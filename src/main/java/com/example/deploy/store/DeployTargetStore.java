@@ -224,6 +224,75 @@ public class DeployTargetStore {
         }
     }
 
+    /**
+     * 批量导入发布配置（配合 /api/servers/import 使用）。
+     * <p>服务器 id 先经 {@code serverIdMapping}（导出文件旧 id → 导入后最终 id）转换，
+     * 再按 id（其次 所属服务器+名称）匹配：已存在则整体更新，否则新增。单条失败不影响其余。</p>
+     *
+     * @return { "imported": 成功条数, "errors": 失败信息列表 }
+     */
+    public Map<String, Object> importTargets(List<DeployTarget> targets,
+                                             Map<String, String> serverIdMapping,
+                                             List<String> errors) {
+        int imported = 0;
+        if (errors == null) {
+            errors = new ArrayList<String>();
+        }
+        if (targets != null) {
+            for (DeployTarget t : targets) {
+                if (t == null || ShellUtil.isBlank(t.getServerId())) {
+                    continue;
+                }
+                String serverId = t.getServerId();
+                if (serverIdMapping != null && serverIdMapping.containsKey(serverId)) {
+                    serverId = serverIdMapping.get(serverId);
+                }
+                try {
+                    DeployTarget nt = t.copy();
+                    nt.setServerId(serverId);
+                    DeployTarget existing = null;
+                    if (ShellUtil.isNotBlank(t.getId())) {
+                        existing = cache.get(t.getId());
+                    }
+                    if (existing == null) {
+                        existing = findByServerAndName(serverId, t.getName());
+                    }
+                    if (existing != null) {
+                        nt.setId(existing.getId());
+                    } else {
+                        // 保留导出文件中的 id，便于重复导入时幂等合并
+                        nt.setId(t.getId());
+                    }
+                    save(nt);
+                    imported++;
+                } catch (Exception e) {
+                    String label = (t.getName() != null ? t.getName() : "未知发布配置");
+                    errors.add(label + ": " + e.getMessage());
+                    log.warn("导入发布配置「{}」失败: {}", label, e.getMessage());
+                }
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        result.put("imported", imported);
+        result.put("errors", errors);
+        return result;
+    }
+
+    /** 按所属服务器 + 名称查找发布配置 */
+    private DeployTarget findByServerAndName(String serverId, String name) {
+        if (serverId == null || name == null) {
+            return null;
+        }
+        synchronized (cache) {
+            for (DeployTarget t : cache.values()) {
+                if (serverId.equals(t.getServerId()) && name.trim().equals(t.getName() == null ? null : t.getName().trim())) {
+                    return t;
+                }
+            }
+        }
+        return null;
+    }
+
     /** 删除服务器时级联删除其全部发布配置 */
     public void deleteByServer(String serverId) {
         boolean changed = false;

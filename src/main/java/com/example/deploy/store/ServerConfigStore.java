@@ -100,7 +100,7 @@ public class ServerConfigStore {
         }
     }
 
-    /** yml 中预置的服务器（按 名称+host+jar 去重）合并进来 */
+    /** yml 中预置的服务器（按 名称+host+port 去重）合并进来 */
     private void importFromYml() {
         List<ServerConfig> presets = properties.getServers();
         if (presets == null || presets.isEmpty()) {
@@ -128,12 +128,16 @@ public class ServerConfigStore {
         }
     }
 
+    /** yml 预置与现有配置去重：同 id，或同 名称+host+port 视为同一台（同主机跑多个应用互不吞并） */
     private ServerConfig findSame(ServerConfig preset) {
         synchronized (cache) {
             for (ServerConfig c : cache.values()) {
-                boolean sameHost = eq(c.getHost(), preset.getHost())
-                        && c.effectivePort() == preset.effectivePort();
-                if (sameHost || (ShellUtil.isNotBlank(preset.getId()) && eq(c.getId(), preset.getId()))) {
+                if (ShellUtil.isNotBlank(preset.getId()) && eq(c.getId(), preset.getId())) {
+                    return c;
+                }
+                if (eq(c.getHost(), preset.getHost())
+                        && c.effectivePort() == preset.effectivePort()
+                        && eq(trimToNull(c.getName()), trimToNull(preset.getName()))) {
                     return c;
                 }
             }
@@ -141,7 +145,7 @@ public class ServerConfigStore {
         return null;
     }
 
-    /** 按 host+port 查找已存在的配置（导入时用于合并去重） */
+    /** 按 host+port 查找已存在的配置（旧接口保留） */
     public ServerConfig findBySignature(ServerConfig preset) {
         synchronized (cache) {
             for (ServerConfig c : cache.values()) {
@@ -155,31 +159,72 @@ public class ServerConfigStore {
     }
 
     /**
-     * 批量导入配置，按签名合并：已存在（同 host+port+jar+remoteDir）则更新，否则新增。
-     * 单条失败不影响其余条目，失败信息汇总到 errors。
+     * 导入时查找应合并到的已有配置：优先同 id；其次同 名称+host+port。
+     * 不能只用 host+port：同一台主机上往往跑多个应用（多条配置），
+     * 仅按主机合并会把它们吞成一条，导致导入后服务器数量与文件夹归属错乱。
      */
-    public Map<String, Object> importServers(List<ServerConfig> configs) {
+    private ServerConfig findForImport(ServerConfig c) {
+        synchronized (cache) {
+            if (ShellUtil.isNotBlank(c.getId()) && cache.containsKey(c.getId())) {
+                return cache.get(c.getId());
+            }
+            for (ServerConfig x : cache.values()) {
+                if (eq(x.getHost(), c.getHost())
+                        && x.effectivePort() == c.effectivePort()
+                        && eq(trimToNull(x.getName()), trimToNull(c.getName()))) {
+                    return x;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 批量导入配置：按 id（其次 名称+host+port）合并，已存在则更新，否则新增（保留原 id，便于关联发布配置）。
+     * 单条失败不影响其余条目，失败信息汇总到 errors。
+     *
+     * @param idMapping 出参（可为 null）：导出文件中的旧 id → 导入后的最终 id，用于还原发布配置的归属
+     * @param finalIds  出参（可为 null）：与入参 configs 顺序一致的最终 id 列表（失败项为 null），用于旧格式按位置关联
+     */
+    public Map<String, Object> importServers(List<ServerConfig> configs,
+                                             Map<String, String> idMapping,
+                                             List<String> finalIds) {
         int added = 0;
         int updated = 0;
         List<String> errors = new ArrayList<String>();
         if (configs != null) {
             for (ServerConfig c : configs) {
                 if (c == null) {
+                    if (finalIds != null) {
+                        finalIds.add(null);
+                    }
                     continue;
                 }
+                String originalId = c.getId();
+                String finalId = null;
                 try {
-                    ServerConfig existing = findBySignature(c);
+                    ServerConfig existing = findForImport(c);
                     if (existing != null) {
                         c.setId(existing.getId());
                         save(c);
                         updated++;
                     } else {
-                        c.setId(null);
-                        save(c);
+                        // 保留导出文件中的 id：新机器上发布配置可凭此 id 还原归属
+                        ServerConfig saved = save(c);
                         added++;
+                        finalId = saved.getId();
+                    }
+                    if (finalId == null) {
+                        finalId = existing != null ? existing.getId() : null;
+                    }
+                    if (idMapping != null && ShellUtil.isNotBlank(originalId) && ShellUtil.isNotBlank(finalId)) {
+                        idMapping.put(originalId, finalId);
                     }
                 } catch (Exception e) {
                     errors.add((c.getName() != null ? c.getName() : "未知服务器") + ": " + e.getMessage());
+                }
+                if (finalIds != null) {
+                    finalIds.add(finalId);
                 }
             }
         }
@@ -355,6 +400,14 @@ public class ServerConfigStore {
 
     private static boolean eq(String a, String b) {
         return a == null ? b == null : a.equals(b);
+    }
+
+    private static String trimToNull(String s) {
+        if (s == null) {
+            return null;
+        }
+        String t = s.trim();
+        return t.isEmpty() ? null : t;
     }
 
     private static String now() {
