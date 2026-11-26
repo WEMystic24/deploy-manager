@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · Java 发布管理平台</title>
+  <link rel="stylesheet" href="css/style.css">
+  <style>
+    body { background: var(--bg); display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; margin: 0; }
+    .login-card { width: 340px; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; box-shadow: var(--shadow); padding: 28px 26px; }
+    .login-card h1 { font-size: 18px; margin: 0 0 4px; }
+    .login-sub { color: var(--text-sub); font-size: 12px; margin-bottom: 18px; }
+    .login-err { color: var(--danger); font-size: 12px; min-height: 16px; margin-bottom: 10px; }
+    .login-field { margin-bottom: 14px; }
+    .login-field label { display: block; font-size: 13px; margin-bottom: 6px; }
+    .login-field input { width: 100%; box-sizing: border-box; padding: 9px 11px;
+      border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+      color: var(--text); font-size: 14px; }
+    .login-field input:focus { outline: none; border-color: var(--primary); }
+    .login-btn { width: 100%; padding: 10px; font-size: 14px; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <form class="login-card" id="loginForm" autocomplete="on">
+    <h1>Java 发布管理平台</h1>
+    <div class="login-sub">请登录以继续</div>
+    <div class="login-err" id="loginErr"></div>
+    <div class="login-field">
+      <label for="username">账号</label>
+      <input type="text" id="username" autocomplete="username">
+    </div>
+    <div class="login-field">
+      <label for="password">密码</label>
+      <input type="password" id="password" autocomplete="current-password">
+    </div>
+    <button type="submit" class="primary login-btn">登录</button>
+  </form>
+  <script>
+    function postJson(url, body) {
+      return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body) }).then(function (r) { return r.json(); });
+    }
+    document.getElementById('loginForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var err = document.getElementById('loginErr');
+      err.textContent = '';
+      // 登录后跳回原页面：拦截器会把原始地址放在 next 参数里（如 board.html?serverId=xxx）
+      var params = new URLSearchParams(location.search);
+      var next = params.get('next') || 'index.html';
+      postJson('/api/auth/login', {
+        username: document.getElementById('username').value,
+        password: document.getElementById('password').value
+      }).then(function (j) {
+        if (j && j.code === 0) {
+          location.href = next;
+        } else {
+          err.textContent = (j && j.message) || '登录失败';
+        }
+      }).catch(function () { err.textContent = '登录请求失败'; });
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>服务总体启动看板</title>
+  <link rel="stylesheet" href="css/style.css">
+  <style>
+    body { background: var(--bg); }
+    .board-wrap { padding: 16px 20px 60px; max-width: 1400px; margin: 0 auto; }
+    .board-summary {
+      display: flex; gap: 12px; flex-wrap: wrap; margin: 14px 0 18px;
+    }
+    .sum-chip {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 16px; min-width: 130px;
+      box-shadow: var(--shadow);
+    }
+    .sum-chip .n { font-size: 22px; font-weight: 700; line-height: 1; }
+    .sum-chip .l { font-size: 12px; color: var(--text-sub); }
+    .sum-chip.run .n { color: var(--success); }
+    .sum-chip.stop .n { color: var(--text-sub); }
+    .sum-chip.err .n { color: var(--danger); }
+    .sum-chip.total .n { color: var(--primary); }
+
+    .svc-group {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; box-shadow: var(--shadow);
+      margin-bottom: 16px; overflow: hidden;
+    }
+    .svc-group-head {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+      font-weight: 600; background: #f6f8fa;
+    }
+    .svc-group-head .meta { font-weight: 400; color: var(--text-sub); font-size: 12px; }
+    .svc-group-head .cnt {
+      margin-left: auto; font-size: 12px; color: var(--text-sub);
+      background: #e2e8f0; border-radius: 10px; padding: 1px 9px;
+    }
+    .svc-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 12px; padding: 14px 16px;
+    }
+    .svc-tile {
+      border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+      background: #fafbfc; transition: all .15s;
+    }
+    .svc-tile:hover { border-color: #b6c6e0; background: #f8fafc; }
+    .svc-top { display: flex; align-items: center; gap: 8px; }
+    .svc-name { font-weight: 600; flex: 1; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .svc-meta { color: var(--text-sub); font-size: 12px; margin-top: 6px;
+      word-break: break-all; }
+    .svc-state { font-size: 12px; margin-top: 4px; color: var(--text); }
+    .svc-state.run { color: var(--success); font-weight: 600; }
+    .svc-state.err { color: var(--danger); font-weight: 600; }
+    .svc-state.stop { color: var(--text-sub); }
+    .svc-deploy-time { font-size: 12px; margin-top: 4px; color: var(--text-sub); }
+    .svc-deploy-time b { color: var(--text); font-weight: 600; }
+    .svc-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+    .svc-actions button { font-size: 12px; padding: 3px 10px; }
+    .badge-fe { background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe;
+      font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 10px; font-weight: 600; }
+    .board-empty, .board-loading { text-align: center; color: var(--text-sub); padding: 80px 0; }
+  </style>
+</head>
+<body>
+<header class="topbar">
+  <h1 style="display:inline-block">服务总体启动看板
+    <span class="sub">跨服务器服务运行状态总览（预览）</span></h1>
+  <div class="btns">
+    <button id="btnRefresh">刷新状态</button>
+    <button class="primary" id="btnStartAll">全部启动</button>
+    <button id="btnStopAll">全部停止</button>
+    <button id="btnRestartAll">全部重启</button>
+    <label class="check"><input type="checkbox" id="autoRefresh"> 自动刷新(15s)</label>
+    <button id="btnBack" onclick="location.href='index.html'">返回主控制台</button>
+  </div>
+</header>
+
+<div class="board-wrap">
+  <div class="board-summary" id="summary"></div>
+  <div id="board"><div class="board-loading">加载中…</div></div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  // 免密模式：无需登录校验，看板直接可见
+
+  // 轻量依赖（与 app.js 同源后端，复用其 REST 接口；后端统一用 R 包装，data 字段为真实数据）
+  function getJson(url) {
+    return fetch(url).then(function (r) { return r.json(); }).then(function (j) {
+      if (j && j.code !== 0) throw new Error(j.message || '请求失败');
+      return j ? j.data : null;
+    });
+  }
+  function post(url) {
+    return fetch(url, { method: 'POST' }).then(function (r) { return r.json(); }).then(function (j) {
+      if (j && j.code !== 0) throw new Error(j.message || '请求失败');
+      return j ? j.data : null;
+    });
+  }
+  function escapeHtml(s) {
+    if (s === null || s === undefined) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  // 由本机发布路径推导服务器部署文件夹名（与后端 deployFolderName()、主控制台 app.js 保持一致）
+  function pathFolderName(p) {
+    if (!p) return '';
+    p = String(p).trim().replace(/[\\/]+$/, '');
+    var k = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+    return k >= 0 ? p.substring(k + 1) : p;
+  }
+  function toast(msg, type) {
+    var box = document.getElementById('toast');
+    var el = document.createElement('div');
+    el.className = 'toast-item' + (type ? ' ' + type : '');
+    el.textContent = msg;
+    box.appendChild(el);
+    setTimeout(function () { el.remove(); }, 2600);
+  }
+
+  // 单服务器模式：URL 带 ?serverId=xxx 时只展示该服务器的服务看板
+  var ONLY_ID = new URLSearchParams(location.search).get('serverId');
+
+  var ALL = []; // 扁平化的服务列表：{server, target, status}
+
+  function stateOf(st, type) {
+    if (type === 'frontend') return { cls: '', text: '前端静态资源', run: null };
+    if (!st || st.connected === false) return { cls: 'err', text: '连接失败' + (st && st.message ? '：' + st.message : ''), run: false };
+    if (st.running) return { cls: 'run', text: '运行中' + (st.pid ? ' · PID ' + st.pid : '') + (st.uptime ? ' · ' + st.uptime : ''), run: true };
+    return { cls: 'stop', text: '未运行', run: false };
+  }
+
+  function tileHtml(item) {
+    var s = item.server, t = item.target, st = item.status;
+    var sd = stateOf(st, t.type);
+    var jarLabel = (t.jarNames && t.jarNames.length)
+      ? t.jarNames.join(', ')
+      : (t.jarName || '');
+    var meta = t.type === 'frontend'
+      ? ('服务器：' + escapeHtml(s.name) + ' · 目录：' + escapeHtml(t.remoteDir || '') + (t.frontendPath ? '/' + escapeHtml(pathFolderName(t.frontendPath)) : '') + ' · 本机：' + escapeHtml(t.frontendPath || ''))
+      : ('服务器：' + escapeHtml(s.name) + ' · ' + escapeHtml(t.remoteDir || '') + '/' + escapeHtml(jarLabel));
+    var actions = t.type === 'frontend'
+      ? '<span class="meta" style="color:var(--text-sub);font-size:12px">前端静态资源，无进程启停</span>'
+      : '<button data-act="start">启动</button>'
+        + '<button data-act="stop">停止</button>'
+        + '<button data-act="restart">重启</button>';
+    var deployTime = t.lastDeployTime
+      ? '<div class="svc-deploy-time">最近发布：<b>' + escapeHtml(t.lastDeployTime) + '</b></div>'
+      : '<div class="svc-deploy-time">最近发布：从未发布</div>';
+    return '<div class="svc-tile" data-id="' + escapeHtml(t.id) + '">'
+      + '<div class="svc-top">'
+      + '<span class="dot ' + sd.cls + '"></span>'
+      + '<span class="svc-name" title="' + escapeHtml(t.name || '') + '">' + escapeHtml(t.name || '未命名') + '</span>'
+      + (t.type === 'frontend' ? '<span class="badge-fe">前端</span>' : '<span class="badge">后端</span>')
+      + '</div>'
+      + '<div class="svc-meta">' + meta + '</div>'
+      + '<div class="svc-state ' + sd.cls + '">' + escapeHtml(sd.text) + '</div>'
+      + deployTime
+      + '<div class="svc-actions">' + actions + '</div>'
+      + '</div>';
+  }
+
+  function renderBoard() {
+    var board = document.getElementById('board');
+    if (!ALL.length) {
+      board.innerHTML = '<div class="board-empty">暂无服务器或发布配置，请先在「主控制台」添加。</div>';
+      document.getElementById('summary').innerHTML = '';
+      return;
+    }
+    // 按服务器分组
+    var byServer = {};
+    ALL.forEach(function (it) {
+      (byServer[it.server.id] = byServer[it.server.id] || []).push(it);
+    });
+    var html = '';
+    Object.keys(byServer).forEach(function (sid) {
+      var items = byServer[sid];
+      var s = items[0].server;
+      var running = items.filter(function (it) {
+        var sd = stateOf(it.status, it.target.type);
+        return sd.run === true;
+      }).length;
+      var total = items.length;
+      html += '<section class="svc-group">'
+        + '<div class="svc-group-head"><span>' + escapeHtml(s.name) + '</span>'
+        + '<span class="meta">' + escapeHtml(s.username || '') + '@' + escapeHtml(s.host || '') + ':' + (s.port || 22) + '</span>'
+        + '<span class="cnt">运行中 ' + running + ' / ' + total + '</span></div>'
+        + '<div class="svc-grid">' + items.map(tileHtml).join('') + '</div></section>';
+    });
+    board.innerHTML = html;
+
+    // 概览统计
+    var backends = ALL.filter(function (it) { return it.target.type !== 'frontend'; });
+    var run = backends.filter(function (it) { var sd = stateOf(it.status, it.target.type); return sd.run === true; }).length;
+    var err = backends.filter(function (it) { var sd = stateOf(it.status, it.target.type); return sd.cls === 'err'; }).length;
+    var stop = backends.length - run - err;
+    document.getElementById('summary').innerHTML =
+      '<div class="sum-chip total"><div><div class="n">' + ALL.length + '</div><div class="l">服务总数</div></div></div>'
+      + '<div class="sum-chip run"><div><div class="n">' + run + '</div><div class="l">运行中</div></div></div>'
+      + '<div class="sum-chip stop"><div><div class="n">' + stop + '</div><div class="l">已停止</div></div></div>'
+      + '<div class="sum-chip err"><div><div class="n">' + err + '</div><div class="l">异常/连接失败</div></div></div>';
+
+    // 绑定每卡片的操作按钮
+    Array.prototype.forEach.call(board.querySelectorAll('.svc-tile'), function (tile) {
+      var id = tile.getAttribute('data-id');
+      Array.prototype.forEach.call(tile.querySelectorAll('button[data-act]'), function (b) {
+        b.onclick = function () { doAction(id, b.getAttribute('data-act'), b); };
+      });
+    });
+  }
+
+  function refreshTile(id) {
+    var item = ALL.filter(function (it) { return it.target.id === id; })[0];
+    if (!item || item.target.type === 'frontend') return;
+    getJson('/api/apps/' + id + '/status').then(function (st) {
+      item.status = st;
+      renderBoard();
+    }).catch(function () { /* 忽略单条失败 */ });
+  }
+
+  function doAction(id, act, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
+    post('/api/apps/' + id + '/' + act).then(function () {
+      toast('已提交' + ({ start: '启动', stop: '停止', restart: '重启' }[act] || act) + '任务', 'ok');
+      setTimeout(function () { refreshTile(id); }, 1800);
+    }).catch(function (e) {
+      toast((e && e.message) || '操作失败', 'err');
+      if (btn) { btn.disabled = false; btn.textContent = ({ start: '启动', stop: '停止', restart: '重启' }[act] || act); }
+    });
+  }
+
+  function batch(act) {
+    if (act === 'stop' && !confirm('确定要停止全部后端服务吗？')) return;
+    var ids = ALL.filter(function (it) { return it.target.type !== 'frontend'; }).map(function (it) { return it.target.id; });
+    if (!ids.length) { toast('没有可操作的后端服务', 'err'); return; }
+    var verb = { start: '启动', stop: '停止', restart: '重启' }[act];
+    toast('正在' + verb + '全部后端服务（' + ids.length + ' 个）…', 'ok');
+    ids.forEach(function (id, idx) {
+      // 错开请求，避免瞬时打满
+      setTimeout(function () { post('/api/apps/' + id + '/' + act).catch(function () {}); }, idx * 250);
+    });
+    setTimeout(refreshAllStatus, ids.length * 250 + 2500);
+  }
+
+  function refreshAllStatus() {
+    var pending = ALL.filter(function (it) { return it.target.type !== 'frontend'; });
+    pending.forEach(function (it, idx) {
+      setTimeout(function () {
+        getJson('/api/apps/' + it.target.id + '/status').then(function (st) {
+          it.status = st; renderBoard();
+        }).catch(function () {});
+      }, idx * 120);
+    });
+  }
+
+  function loadBoard() {
+    document.getElementById('board').innerHTML = '<div class="board-loading">加载中…</div>';
+    // 单服务器模式：只加载该服务器的发布配置
+    if (ONLY_ID) {
+      getJson('/api/servers/' + encodeURIComponent(ONLY_ID)).then(function (s) {
+        if (!s) {
+          document.getElementById('board').innerHTML = '<div class="board-empty">未找到服务器（id=' + escapeHtml(ONLY_ID) + '）。</div>';
+          return;
+        }
+        document.title = '服务总体启动看板 · ' + s.name;
+        var sub = document.querySelector('.topbar .sub');
+        if (sub) sub.textContent = '本服务器服务运行状态（' + escapeHtml(s.name) + '）';
+        return getJson('/api/servers/' + encodeURIComponent(ONLY_ID) + '/targets').then(function (targets) {
+          (targets || []).forEach(function (t) {
+            ALL.push({ server: s, target: t, status: null });
+          });
+          renderBoard();
+          refreshAllStatus();
+        }).catch(function (e) {
+          document.getElementById('board').innerHTML = '<div class="board-empty">加载失败：' + escapeHtml(e && e.message || e) + '</div>';
+        });
+      }).catch(function (e) {
+        document.getElementById('board').innerHTML = '<div class="board-empty">加载失败：' + escapeHtml(e && e.message || e) + '</div>';
+      });
+      return;
+    }
+    getJson('/api/servers').then(function (servers) {
+      servers = servers || [];
+      if (!servers.length) {
+        document.getElementById('board').innerHTML = '<div class="board-empty">暂无服务器，请先在「主控制台」添加。</div>';
+        return;
+      }
+      // 逐个服务器拉取其发布配置
+      return Promise.all(servers.map(function (s) {
+        return getJson('/api/servers/' + s.id + '/targets').then(function (targets) {
+          (targets || []).forEach(function (t) {
+            ALL.push({ server: s, target: t, status: null });
+          });
+        }).catch(function () {});
+      })).then(function () { renderBoard(); refreshAllStatus(); });
+    }).catch(function (e) {
+      document.getElementById('board').innerHTML = '<div class="board-empty">加载失败：' + escapeHtml(e && e.message || e) + '</div>';
+    });
+  }
+
+  document.getElementById('btnRefresh').onclick = function () { loadBoard(); };
+  document.getElementById('btnStartAll').onclick = function () { batch('start'); };
+  document.getElementById('btnStopAll').onclick = function () { batch('stop'); };
+  document.getElementById('btnRestartAll').onclick = function () { batch('restart'); };
+  var timer = null;
+  document.getElementById('autoRefresh').onchange = function () {
+    if (this.checked) {
+      timer = setInterval(refreshAllStatus, 15000);
+      toast('已开启自动刷新（15s）', 'ok');
+    } else if (timer) {
+      clearInterval(timer); timer = null;
+      toast('已关闭自动刷新', 'ok');
+    }
+  };
+
+  loadBoard();
+</script>
+</body>
+</html>

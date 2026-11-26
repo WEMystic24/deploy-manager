@@ -1,0 +1,68 @@
+server:
+  port: 8099
+
+spring:
+  application:
+    name: deploy-manager
+  servlet:
+    multipart:
+      # jar 包一般较大，放宽上传限制
+      max-file-size: 1024MB
+      max-request-size: 1024MB
+  mvc:
+    log-resolved-exception: false
+
+logging:
+  level:
+    com.example.deploy: info
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level %logger{36} - %msg%n"
+
+deploy:
+  # 服务器配置持久化位置（密码自动加密存储）
+  # 默认在用户主目录 ~/.deploy-manager/ 下，使用绝对路径，
+  # 这样无论从哪个目录启动 jar，配置都能稳定加载、不会因 cwd 不同“消失”。
+  data-file: ${user.home}/.deploy-manager/servers.json
+  # 页面上传的 jar 在本机的落地目录
+  upload-dir: ${user.home}/.deploy-manager/uploads
+  operation-log-file: ${user.home}/.deploy-manager/operation.log
+  # 远程中转根目录：上传先落到此目录下的子目录（deploy-staging/jdk-install/nacos-install），
+  # 再 cp 到目标路径。默认 /tmp（登录账号必可写）；如需改到非 /tmp，
+  # 必须确保该目录在每台目标服务器上存在且登录账号有写权限，例如 /data/tmp。
+  staging-dir: /tmp
+  # 密码加密密钥：请修改成自己的，改动后旧密码需重新录入
+  secret-key: ChangeMe@DeployManager2026
+  connect-timeout-seconds: 15
+  exec-timeout-seconds: 180
+  # 每个应用在服务器上保留的历史备份数
+  keep-backup-count: 10
+  # 停止应用时等待优雅退出的秒数，超时则 kill -9
+  stop-wait-seconds: 20
+  # 启动后等待多少秒检查进程是否存活
+  start-wait-seconds: 8
+
+  # 路径选择弹窗的默认目录（输入框无已配置路径、且无上次浏览记录时从这里开始）
+  local-file-default-dir: D:/GitProjects
+
+  # 页面访问认证：已改为免密模式（AuthInterceptor.AUTH_DISABLED=true 恒放行），
+  # 登录页与登录入口已从前端移除。此处 enabled 保持 false，避免状态接口误报需登录。
+  auth:
+    enabled: false
+    username: admin
+    password: admin123
+
+  # 可选：在这里预置服务器，首次启动会自动导入到 data-file
+  # 之后建议直接在页面上维护，改动不会被 yml 覆盖
+  servers: []
+  #  - name: 测试环境-订单服务
+  #    host: 192.168.1.100
+  #    port: 22
+  #    username: root
+  #    password: your-password
+  #    remote-dir: /opt/app/order
+  #    jar-name: order-service.jar
+  #    java-cmd: java
+  #    jvm-opts: -Xms512m -Xmx1024m -Dfile.encoding=UTF-8
+  #    app-args: --spring.profiles.active=test
+  #    log-file: /opt/app/order/logs/order.log
+  #    remark: 订单服务测试环境

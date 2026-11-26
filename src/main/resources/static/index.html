@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Java 发布管理平台</title>
+  <link rel="stylesheet" href="css/style.css?v=3">
+</head>
+<body>
+
+<header class="topbar">
+  <div>
+    <h1 style="display:inline-block">Java 发布管理平台<span class="sub">jar 上传 · 远程发布 · 一键重启</span></h1>
+  </div>
+    <div class="btns">
+      <button id="btnExport">导出配置</button>
+      <button id="btnImport">导入配置</button>
+      <input type="file" id="importFile" accept=".json,application/json" style="display:none">
+      <button id="btnRefreshAll">刷新列表</button>
+      <button id="btnNacos" class="primary">Nacos 集群</button>
+    <button id="btnDisk" class="primary">磁盘管理</button>
+    <button id="btnBoard" class="primary" onclick="window.open('board.html','_blank')" title="打开服务总体启动看板（预览）">启动看板</button>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <span>服务器 / 应用</span>
+      <div class="sidebar-head-btns">
+        <button id="btnAddGroup" title="新建文件夹对服务器分组">+ 文件夹</button>
+        <button class="primary" id="btnAdd">新增</button>
+      </div>
+    </div>
+    <div id="serverList"></div>
+  </aside>
+
+  <section class="content">
+    <div class="empty" id="emptyTip">左侧选择一个服务器，或点击「新增」配置第一台服务器</div>
+
+    <div id="panel" style="display:none">
+      <!-- 基本信息 + 操作（服务器级：连接 / 配置） -->
+      <div class="card">
+        <div class="panel-head">
+          <div>
+            <h2 id="svrName">-</h2>
+            <div class="meta" id="svrMeta"></div>
+          </div>
+          <div class="btns">
+            <button data-act="test">连接测试</button>
+            <button data-act="status">刷新状态</button>
+            <button class="primary" data-act="installJdk">安装 JDK</button>
+            <button class="primary" data-act="board" title="查看本服务器所有服务的总体启动看板">服务总体看板</button>
+            <button data-act="sftp">SFTP 传输</button>
+            <button data-act="edit">编辑连接配置</button>
+            <button class="danger" data-act="del">删除</button>
+          </div>
+        </div>
+        <div class="cards" id="statusCards"></div>
+      </div>
+
+      <!-- 发布配置（一台服务器可配置多个发布目标，分别发布不同的 jar 包） -->
+      <div class="card">
+        <div class="panel-head">
+          <div>
+            <h3 class="section" style="margin:0">发布配置</h3>
+            <div class="meta" style="color:var(--text-sub);font-size:12px">
+              每个发布配置独立管理发布目录 / jar / 启动参数，可分别发布不同的 jar 包
+            </div>
+          </div>
+          <div class="btns">
+            <label class="check"><input type="checkbox" id="targetSelectAll"> 全选</label>
+            <button class="primary" id="btnDeploySequential" title="勾选发布配置后并行发布：不同服务器同时开始，同一服务器内按勾选顺序发布；点击左侧服务器可查看其进度">并行一键发布</button>
+            <button class="primary btn-restart" id="btnRestartBatch" title="勾选多个发布配置后，按列表顺序逐个重启（仅后端配置，一个完成再下一个）">批量重启</button>
+            <button class="primary" id="btnBatchDir" title="勾选多个发布配置后，批量替换其发布目录的公共前缀（保留各自子路径）">批量改目录</button>
+            <button class="primary" id="btnBatchJvm" title="勾选多个发布配置后，批量设置其 JVM 参数（仅后端类型生效）">批量改 JVM 参数</button>
+            <button class="primary" id="btnAddTarget">+ 新增发布配置</button>
+          </div>
+        </div>
+        <div id="targetList"></div>
+        <div class="empty" id="targetEmpty" style="display:none;padding:18px 0">尚未配置发布目标，点击「新增发布配置」创建</div>
+        <input type="file" id="jarFile" accept=".jar" style="display:none">
+        <input type="file" id="oneDeployJar" accept=".jar" style="display:none">
+        <input type="file" id="feUploadFile" style="display:none">
+        <label class="check" style="display:none"><input type="checkbox" id="restartAfterUpload" checked></label>
+      </div>
+
+      <!-- 结果 / 日志 / 备份 / 记录 -->
+      <div class="card">
+        <div class="tabbar">
+          <button class="active" data-tab="result">执行结果</button>
+          <button data-tab="log">运行日志</button>
+          <button data-tab="backup">历史版本</button>
+          <button data-tab="oplog">操作记录</button>
+          <button data-tab="cmd">命令行</button>
+        </div>
+
+        <div class="tab-pane" id="tab-result">
+          <div class="progress-overall" id="overallBarWrap" style="display:none">
+            <div class="progress-overall-bar" id="overallBar"></div>
+            <span class="progress-overall-text" id="overallText"></span>
+          </div>
+          <div class="result-banner" id="resultBanner" style="display:none"></div>
+          <div class="seq-status" id="seqStatus" style="display:none"></div>
+          <div id="uploadBox" style="display:none">
+            <div class="upload-title" id="uploadText">正在上传文件到服务器…</div>
+            <div class="upload-bar-wrap">
+              <div class="upload-bar" id="uploadBar"></div>
+            </div>
+            <div class="upload-meta">
+              <span class="upload-pct" id="uploadPct">0%</span>
+              <span class="upload-speed" id="uploadSpeed"></span>
+            </div>
+          </div>
+          <ul class="steps" id="stepList"></ul>
+          <div class="empty" id="resultEmpty" style="padding:30px 0">暂无执行结果</div>
+        </div>
+
+        <div class="tab-pane" id="tab-log" style="display:none">
+          <div class="log-toolbar">
+            <div class="log-switch" id="logTypeSwitch">
+              <button type="button" class="active" data-logtype="info">info 日志</button>
+              <button type="button" data-logtype="error">error 日志</button>
+            </div>
+            <input type="text" class="grow" id="logKeyword"
+                   placeholder='关键词，空格分隔多个条件（需同时命中）；带空格的关键词用双引号，如 ERROR "2026-11-25 17:30"'>
+            <button id="btnLoadLog">查询</button>
+            <button id="btnResetLogKeyword" title="清空关键词">清空</button>
+          </div>
+          <div class="log-toolbar log-toolbar-sub">
+            <label class="check">行数 <input type="number" id="logLines" value="200" min="10" max="2000" style="width:90px"></label>
+            <label class="check"><input type="checkbox" id="autoLog"> 每 5 秒自动刷新</label>
+            <span class="log-path" id="logPathHint" title="">日志文件：—</span>
+          </div>
+          <pre class="output" id="logOutput">点击「查询」查看远程日志尾部</pre>
+        </div>
+
+        <div class="tab-pane" id="tab-backup" style="display:none">
+          <div class="row">
+            <button id="btnLoadBackup">刷新备份列表</button>
+            <span class="meta" style="color:var(--text-sub);font-size:12px">回滚会把选中的历史包覆盖为当前运行包</span>
+          </div>
+          <table class="list">
+            <thead>
+            <tr><th>备份文件</th><th style="width:90px">大小</th><th style="width:170px">时间</th><th style="width:120px">操作</th></tr>
+            </thead>
+            <tbody id="backupBody"></tbody>
+          </table>
+        </div>
+
+        <div class="tab-pane" id="tab-oplog" style="display:none">
+          <div class="row">
+            <button id="btnLoadOpLog">刷新操作记录</button>
+          </div>
+          <table class="list">
+            <thead>
+            <tr><th style="width:150px">时间</th><th>服务器</th><th style="width:90px">动作</th><th style="width:70px">结果</th><th style="width:80px">耗时</th><th>说明</th></tr>
+            </thead>
+            <tbody id="opLogBody"></tbody>
+          </table>
+        </div>
+
+        <div class="tab-pane" id="tab-cmd" style="display:none">
+          <div class="cmd-toolbar">
+            <span class="cmd-cwd-label">当前目录</span>
+            <span class="cmd-cwd" id="cmdCwd">未连接</span>
+            <span class="cmd-user" id="cmdUser" title="">—</span>
+            <span class="cmd-hint">在下方终端中直接输入命令，回车执行；输入 cd /opt/app 可切换目录</span>
+            <button id="btnClearCmd">清空</button>
+          </div>
+          <div class="cmd-history" id="cmdHistory"></div>
+          <div class="cmd-term" id="cmdOutput">
+            <div class="cmd-blocks" id="cmdBlocks"></div>
+            <div class="cmd-complete" id="cmdComplete" style="display:none"></div>
+            <div class="cmd-inputline">
+              <span class="cmd-prompt" id="cmdPrompt"></span>
+              <input type="text" id="cmdInput" autocomplete="off" spellcheck="false" placeholder="输入命令，回车执行；Tab 补全路径">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 右侧 SFTP 文件浏览 -->
+  <aside class="sftp-panel" id="sftpPanel" style="display:none">
+    <div class="sftp-resizer" id="sftpResizer" title="拖拽调整宽度"></div>
+    <div class="sftp-head">
+      <span>SFTP 文件浏览</span>
+      <div class="btns">
+        <button id="btnSftpRefresh">刷新</button>
+        <button id="btnSftpClose" title="收起 SFTP 文件浏览">×</button>
+      </div>
+    </div>
+    <div class="sftp-crumbs" id="sftpCrumbs"></div>
+    <div class="sftp-actions">
+      <button id="btnSftpMkdir">新建文件夹</button>
+      <button class="primary" id="btnSftpUpload">上传文件</button>
+      <input type="file" id="sftpFile" style="display:none">
+    </div>
+    <div class="sftp-progress" id="sftpProgress" style="display:none">
+      <div class="progress">
+        <div class="progress-bar" id="sftpProgressBar"></div>
+        <span class="progress-pct" id="sftpProgressPct">0%</span>
+      </div>
+      <div class="sftp-progress-text" id="sftpProgressText">正在上传到服务器…</div>
+    </div>
+    <div class="sftp-msg" id="sftpMsg"></div>
+    <ul class="sftp-list" id="sftpList"></ul>
+  </aside>
+</main>
+
+<!-- vi 远程文件编辑器弹窗（命令行页面输入 vi/vim 后打开，支持 :wq! 保存并退出） -->
+<div class="modal-mask" id="viModalMask">
+  <div class="modal modal-vi">
+    <div class="modal-head">
+      <span id="viTitle">vi — 远程文件编辑器</span>
+      <button id="btnCloseVi">关闭</button>
+    </div>
+    <div class="vi-body">
+      <div class="vi-bar">
+        <span class="vi-path" id="viPath"></span>
+        <span class="vi-meta" id="viMeta"></span>
+      </div>
+      <textarea id="viEditor" spellcheck="false" placeholder="在此编辑文件内容…"></textarea>
+      <div class="vi-cmdline">
+        <span class="vi-cmd-prompt">:</span>
+        <input type="text" id="viCmdInput" autocomplete="off" spellcheck="false"
+               placeholder="vi 命令：wq! 保存并退出 / w 仅保存 / q! 放弃退出，回车执行">
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnViWq" class="primary">保存并退出 (:wq!)</button>
+      <button id="btnViW">仅保存 (:w)</button>
+      <button id="btnViQuit">放弃退出 (:q!)</button>
+    </div>
+  </div>
+</div>
+
+<!-- 配置弹窗 -->
+<div class="modal-mask" id="modalMask">
+  <div class="modal">
+    <div class="modal-head">
+      <span id="modalTitle">新增服务器</span>
+      <button id="btnCloseModal">关闭</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="f-id">
+      <div class="field">
+        <label>名称 *</label>
+        <input type="text" id="f-name" placeholder="测试环境-订单服务">
+      </div>
+      <div class="field">
+        <label>所属文件夹</label>
+        <select id="f-group"></select>
+        <div class="hint">用于将服务器归入不同功能文件夹，可在左侧「+ 文件夹」新建</div>
+      </div>
+      <div class="field">
+        <label>服务器地址 *</label>
+        <input type="text" id="f-host" placeholder="192.168.1.100">
+      </div>
+      <div class="field">
+        <label>SSH 端口</label>
+        <input type="number" id="f-port" value="22">
+      </div>
+      <div class="field">
+        <label>认证方式</label>
+        <select id="f-authType">
+          <option value="PASSWORD">账号密码</option>
+          <option value="PRIVATE_KEY">私钥文件</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>登录账号 *</label>
+        <input type="text" id="f-username" placeholder="root">
+      </div>
+      <div class="field">
+        <label>登录密码</label>
+        <div class="pwd-wrap">
+          <input type="password" id="f-password" placeholder="编辑时留空表示不修改">
+          <button type="button" class="pwd-eye" data-toggle="f-password" title="显示密码">👁</button>
+        </div>
+        <div class="hint">密码加密后保存到 data/servers.json</div>
+      </div>
+      <div class="field">
+        <label>私钥路径</label>
+        <input type="text" id="f-privateKeyPath" placeholder="/Users/me/.ssh/id_rsa（认证方式选私钥时填写）">
+      </div>
+      <div class="field">
+        <label>私钥口令</label>
+        <div class="pwd-wrap">
+          <input type="password" id="f-passphrase" placeholder="无口令可留空">
+          <button type="button" class="pwd-eye" data-toggle="f-passphrase" title="显示密码">👁</button>
+        </div>
+      </div>
+      <div class="field full">
+        <label>提权（登录后切换用户）</label>
+        <div class="su-box">
+          <label class="check"><input type="checkbox" id="f-suEnabled"> 登录后使用 su 切换到其他用户（如 root）再执行操作</label>
+          <div class="row" style="margin-top:8px">
+            <input type="text" id="f-suUser" placeholder="目标用户，默认 root" style="width:200px">
+            <div class="pwd-wrap">
+              <input type="password" id="f-suPassword" placeholder="su 密码（编辑时留空表示不修改）">
+              <button type="button" class="pwd-eye" data-toggle="f-suPassword" title="显示密码">👁</button>
+            </div>
+          </div>
+          <div class="hint">适用于只能用普通账号 SSH 登录、需切 root 才有 /opt 等目录权限的场景。密码同样加密保存。</div>
+        </div>
+      </div>
+      <div class="field full">
+        <label>远程中转目录</label>
+        <input type="text" id="f-stagingDir" placeholder="留空默认 /tmp">
+        <div class="hint">上传时先把文件传到此目录再 cp 到目标。默认 /tmp（登录账号必可写）；若 /tmp 空间不足或合规不允许，可填登录账号有写权限的其他目录，如 /data/tmp。留空则用全局配置。</div>
+      </div>
+      <div class="field full">
+        <label>备注</label>
+        <input type="text" id="f-remark" placeholder="可选">
+        <div class="hint">发布目录、jar 名称、启动参数等请保存后在「发布配置」中独立维护（一台服务器可配置多个）</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnCancel">取消</button>
+      <button class="primary" id="btnSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 发布配置弹窗 -->
+<div class="modal-mask" id="targetModalMask">
+  <div class="modal modal-target">
+    <div class="modal-head">
+      <span id="targetModalTitle">新增发布配置</span>
+      <button id="btnCloseTargetModal">关闭</button>
+    </div>
+    <div class="modal-body target-body">
+      <input type="hidden" id="t-id">
+      <input type="hidden" id="t-serverId">
+
+      <div class="tgroup full" style="margin-top:0">
+        <div class="tgroup-title">类型</div>
+        <div class="row t-type-row">
+          <label class="radio-card">
+            <input type="radio" name="t-type" value="backend" checked>
+            <span class="radio-card-in">
+              <span class="radio-card-name">后端</span>
+              <span class="radio-card-desc">Java 应用：jar / java / 启动参数等完整配置</span>
+            </span>
+          </label>
+          <label class="radio-card">
+            <input type="radio" name="t-type" value="frontend">
+            <span class="radio-card-in">
+              <span class="radio-card-name">前端</span>
+              <span class="radio-card-desc">静态资源：本机发布路径与发布后命令</span>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <!-- 后端部署方式（后端类型的子分类）：默认部署 / 自定义部署 -->
+      <div class="tgroup full backend-only" id="backendModeGroup" style="margin-top:0">
+        <div class="tgroup-title">后端部署方式</div>
+        <div class="row t-type-row">
+          <label class="radio-card">
+            <input type="radio" name="t-deployMode" value="default" checked>
+            <span class="radio-card-in">
+              <span class="radio-card-name">默认部署</span>
+              <span class="radio-card-desc">单个 jar，自动生成启动命令（可选自定义）</span>
+            </span>
+          </label>
+          <label class="radio-card">
+            <input type="radio" name="t-deployMode" value="custom">
+            <span class="radio-card-in">
+              <span class="radio-card-name">自定义部署</span>
+              <span class="radio-card-desc">可一次上传更新多个 jar 包</span>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field full">
+        <label>配置名称 *</label>
+        <input type="text" id="t-name" placeholder="如 订单服务 / 网关服务">
+      </div>
+
+      <div class="field full">
+        <label id="t-remoteDirLabel">jar 包目录 *</label>
+        <input type="text" id="t-remoteDir" placeholder="/opt/app/order">
+        <div class="hint" id="t-remoteDirHint">jar 包上传到该目录，目录不存在会自动创建；应用也在该目录下启动</div>
+      </div>
+
+      <!-- 后端专属：conf 目录与配置文件上传 -->
+      <div class="backend-only conf-fields">
+        <div class="field full">
+          <label>conf 目录</label>
+          <input type="text" id="t-confDir" placeholder="留空默认 jar 包目录/conf">
+          <div class="hint">yml / properties 等配置文件所在目录，选填；留空则使用「jar 包目录/conf」。已配置该目录时发布会自动创建。</div>
+        </div>
+        <div class="field full">
+          <label>上传 conf 文件（可多选）</label>
+          <input type="file" id="t-confFiles" multiple style="width:100%">
+          <div class="hint">点「保存并上传文件」时才会把所选文件上传到 conf 目录（同名覆盖、不重启）；只点「保存」不会上传任何文件。只取文件名，不保留子目录结构。</div>
+        </div>
+      </div>
+
+      <!-- 后端专属字段 -->
+      <div class="backend-only">
+        <div class="tgroup full">
+          <div class="tgroup-title">后端配置</div>
+          <div class="tgroup-grid">
+            <div class="field default-only">
+              <label>jar 包名称 *</label>
+              <input type="text" id="t-jarName" placeholder="order-service.jar">
+              <div class="hint">远程统一使用该文件名，便于启停与备份</div>
+            </div>
+            <div class="field">
+              <label>java 命令</label>
+              <input type="text" id="t-javaCmd" placeholder="java 或 /usr/local/jdk1.8/bin/java">
+            </div>
+            <div class="field">
+              <label>JVM 参数</label>
+              <input type="text" id="t-jvmOpts" placeholder="-Xms512m -Xmx1024m -Dfile.encoding=UTF-8">
+            </div>
+            <div class="field">
+              <label>info 日志文件</label>
+              <input type="text" id="t-infoLogFile" placeholder="留空默认 jar 包目录/logs/jar名.log">
+              <div class="hint">默认启动命令的输出去向；运行日志页「info」页签读取该文件</div>
+            </div>
+            <div class="field">
+              <label>error 日志文件</label>
+              <input type="text" id="t-errorLogFile" placeholder="留空默认 jar 包目录/logs/jar名-error.log">
+              <div class="hint">错误日志（通常由 logback 等日志框架写入）；「error」页签读取该文件</div>
+            </div>
+            <div class="field">
+              <label>备份目录</label>
+              <input type="text" id="t-backupDir" placeholder="留空默认 jar 包目录/backup">
+            </div>
+            <div class="field">
+              <label class="check"><input type="checkbox" id="t-backupEnabled"> 发布前备份</label>
+              <div class="hint">默认不勾选（不备份）。勾选后发布前会把旧版本备份到备份目录，可用于回滚</div>
+            </div>
+            <div class="field">
+              <label>启动前命令</label>
+              <input type="text" id="t-preStartCmd" placeholder="可选，如 source /etc/profile">
+            </div>
+            <div class="field">
+              <label>启动后命令</label>
+              <input type="text" id="t-postStartCmd" placeholder="可选">
+            </div>
+          </div>
+          <div class="field full">
+            <label>启动参数</label>
+            <input type="text" id="t-appArgs" placeholder="--spring.profiles.active=test --server.port=8080">
+          </div>
+          <!-- 自定义部署专属字段 -->
+          <div class="field full custom-only">
+            <label>选择 jar 包（可多选）</label>
+            <input type="file" id="t-jarFiles" accept=".jar" multiple style="width:100%">
+            <div class="hint">点「保存并上传文件」时才会把这些 jar 上传到本配置（不重启）；只点「保存」不会上传，也不会部署。要部署请用卡片上的「一键发布」。</div>
+          </div>
+          <div class="field full custom-only">
+            <label>已上传的 jar 包</label>
+            <div class="jar-chip-list" id="t-jarNameList"></div>
+            <div class="hint">由上传的 jar 文件自动识别（保持原文件名，不会重命名）；发布时这些 jar 会一起上传更新，也是启停识别 / 备份 / 回滚的依据。如需剔除某个 jar，点标签上的 ×。</div>
+          </div>
+          <!-- 自定义启动命令：默认部署 / 自定义部署都可用 -->
+          <div class="field full">
+            <label>自定义启动命令</label>
+            <textarea id="t-startCommand" rows="4" spellcheck="false" placeholder="留空则使用默认命令：nohup java -jar <jar名> >> <info 日志文件> 2>&1 &amp;"></textarea>
+            <div class="hint">
+              选填，默认部署与自定义部署都生效：填写后<strong>完全覆盖</strong>默认启动命令——不会自动 cd 到 jar 包目录、也不会校验 jar 是否存在，按命令原文执行。
+              如需在 jar 包目录下启动，请自行写 <code>cd {remoteDir} &amp;&amp; …</code>。
+              支持占位符：{remoteDir} {confDir} {jarName} {jarPath} {jars} {logFile}（等同 info 日志） {infoLogFile} {errorLogFile} {pidFile} {javaCmd} {jvmOpts} {appArgs} {backupDir}，其中 {jars} 会展开为全部 jar 包的完整路径。
+            </div>
+          </div>
+          <div class="field full default-only">
+            <label>本机路径发布</label>
+            <div class="row">
+              <input type="text" class="grow" id="t-localPath" placeholder="填写本机 jar 路径，例如 /Users/me/project/target/app.jar">
+              <button type="button" id="btnBrowseLocalPath" title="弹窗浏览选择本机路径">浏览…</button>
+              <label class="check"><input type="checkbox" id="t-restartLocal" checked> 发布后重启</label>
+              <button id="btnTargetDeployLocal">用本机路径发布</button>
+            </div>
+            <div class="hint">保存配置后可直接用本机已有的 jar 发布到该配置的目录（适合本地 Maven 打包后推送），点「浏览…」可在弹窗中选择文件</div>
+          </div>
+          <div class="field full default-only">
+            <label>选择 jar 文件上传</label>
+            <div class="row">
+              <input type="file" id="t-jarFile" accept=".jar" style="flex:1">
+            </div>
+            <div class="hint">点「保存并上传文件」时才会把所选 jar 上传到本配置（文件名回填到「jar 包名称」，不重启）；只点「保存」不会上传，也不会部署。要完整发布请用卡片上的「一键发布」。</div>
+          </div>
+          <div class="field full">
+            <label>启动命令预览</label>
+            <div class="cmd-preview-box">
+              <button type="button" class="cmd-copy" id="btnCopyStartCmd" title="复制启动命令">复制</button>
+              <pre id="startCmdText" class="cmd-preview"></pre>
+            </div>
+            <div class="hint">随上方字段实时生成（未填自定义启动命令时，实际启动会先 cd 到 jar 包目录）。保存后重启应用即使用此命令；<span style="color:var(--danger)">尖括号 &lt;…&gt; 表示该项尚未填写</span>。</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 前端专属字段 -->
+      <div class="frontend-only" style="display:none">
+        <div class="tgroup full">
+          <div class="tgroup-title">前端配置</div>
+          <div class="field full">
+            <label>本机发布路径 *</label>
+            <div class="row">
+              <input type="text" class="grow" id="t-frontendPath" placeholder="如 /Users/me/project/dist 或 /opt/build/web">
+              <button type="button" id="btnBrowseFrontendPath" title="弹窗浏览选择本机目录">浏览…</button>
+            </div>
+            <div class="hint">本机静态资源目录（或打包产物路径），保存发布时从此处取文件推送到目标服务器，点「浏览…」可在弹窗中选择目录</div>
+          </div>
+            <div class="field full">
+            <label>压缩成 zip 后上传</label>
+            <label class="check">
+              <input type="checkbox" id="t-zip"> 压缩成 zip 后上传（勾选后自动填充解压命令）
+            </label>
+            <div class="hint">勾选则把本机发布路径打成 zip 上传，发布后执行命令会自动填为在目标服务器解压到发布目录根目录的命令</div>
+          </div>
+          <div class="field full">
+            <label>更新方式</label>
+            <div class="radio-row">
+              <label class="check"><input type="radio" name="t-deploy-mode" id="t-deploy-mode-overwrite" value="overwrite" checked> 覆盖更新</label>
+              <label class="check"><input type="radio" name="t-deploy-mode" id="t-deploy-mode-clean" value="clean"> 清空后更新</label>
+            </div>
+            <div class="hint">覆盖更新：同名文件被新版本覆盖，旧目录中已删除的文件会残留；清空后更新：先删除「发布目录/本机发布路径末级目录名」整个目录再重建，得到干净目录（发布路径末级为空时跳过清空）</div>
+          </div>
+          <div class="field full">
+            <label class="check"><input type="checkbox" id="t-backupEnabledFe"> 发布前备份</label>
+            <div class="hint">默认不勾选（不备份）。勾选后发布前会把发布目录备份成 tar.gz 存到备份目录，可用于回滚</div>
+          </div>
+          <div class="field full">
+            <label>发布后执行命令</label>
+            <input type="text" id="t-frontendPostCmd" placeholder="可选，如 cp -r ./* /usr/share/nginx/html/">
+            <div class="hint">文件推送完成后在目标服务器上执行的命令（如复制到 nginx 目录、解压、构建等）</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnCancelTarget">取消</button>
+      <button id="btnSaveAndUpload" title="保存配置并把所选 jar / conf 文件上传到服务器：只更新文件，不备份、不停止、不重启。需要部署请用卡片上的「一键发布」">保存并上传文件</button>
+      <button class="primary" id="btnSaveTarget" title="只保存配置，不上传文件、不部署">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 跨服复制发布配置弹窗 -->
+<div class="modal-mask" id="copyToModalMask">
+  <div class="modal" style="width:480px">
+    <div class="modal-head">
+      <span>复制到其它服务器</span>
+      <button id="btnCloseCopyTo">关闭</button>
+    </div>
+    <div class="modal-body" style="grid-template-columns:1fr">
+      <div class="field">
+        <label>选择目标服务器</label>
+        <select id="copyToServerSel"></select>
+      </div>
+      <div class="hint">将把当前发布配置原样复制到所选服务器（保留原名称）。目标服务器须已在左侧列表中存在。</div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnCancelCopyTo">取消</button>
+      <button class="primary" id="btnConfirmCopyTo">确定复制</button>
+    </div>
+  </div>
+</div>
+
+<!-- 安装 JDK 弹窗 -->
+<div class="modal-mask" id="jdkModalMask">
+  <div class="modal modal-jdk">
+    <div class="modal-head">
+      <span id="jdkModalTitle">安装 JDK</span>
+      <button id="btnCloseJdkModal">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="field full">
+        <label>JDK 安装包 *</label>
+        <input type="file" id="jdkFile">
+        <div class="hint">支持 tar.gz / tgz / tar / zip 格式（如 jdk-8u202-linux-x64.tar.gz）。文件会上传到本服务后再传输到目标服务器解压</div>
+        <div class="hint jdk-ver-hint" id="jdkVerHint"></div>
+      </div>
+      <div class="field full">
+        <label>安装目录 *</label>
+        <input type="text" id="jdkInstallDir" placeholder="/usr/local/java" value="/usr/local/java">
+        <div class="hint">JDK 将被解压到该目录下（如 /usr/local/java/jdk1.8.0_202），目录不存在会自动创建</div>
+      </div>
+      <div class="field full">
+        <label>软链接名（可选）</label>
+        <input type="text" id="jdkLinkName" placeholder="如 jdk8，留空则直接用解压出的目录作为 JAVA_HOME">
+        <div class="hint">在「安装目录」下创建同名软链接（如 /usr/local/java/jdk8 → 解压目录），多版本切换时只需改这个链接</div>
+      </div>
+      <div class="field full">
+        <label class="check"><input type="checkbox" id="jdkConfigureEnv" checked> 配置全局环境变量（写入 /etc/profile.d/deploy-jdk.sh）</label>
+        <div class="hint">写入 JAVA_HOME 与 PATH，新开 shell 即可用 java / javac（需 root 权限，若当前账号无权写 /etc 请开启 su 切换 root）</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnCancelJdk">取消</button>
+      <button class="primary" id="btnInstallJdk">开始安装</button>
+    </div>
+  </div>
+</div>
+
+<!-- Nacos 集群一键部署弹窗 -->
+<div class="modal-mask" id="nacosModalMask">
+  <div class="modal modal-nacos">
+    <div class="modal-head">
+      <span>Nacos 集群一键部署</span>
+      <button id="btnCloseNacos">关闭</button>
+    </div>
+    <div class="modal-body nacos-body">
+      <div class="nacos-cols">
+        <div class="nacos-col">
+          <div class="tgroup-title">集群节点（勾选服务器列表，至少 2 个）</div>
+          <div class="nacos-nodes" id="nacosNodeList"><div class="nacos-loading">加载服务器列表…</div></div>
+          <label class="check nacos-selall"><input type="checkbox" id="nacosSelAll"> 全选</label>
+          <div class="hint">节点即「服务器」列表中已配置的机器；cluster.conf 会自动填入各节点 host:Nacos端口</div>
+        </div>
+        <div class="nacos-col">
+          <div class="field"><label>集群名称</label><input type="text" id="nacosClusterName" value="nacos-cluster"></div>
+          <div class="field"><label>Nacos 端口</label><input type="number" id="nacosPort" value="8848"></div>
+          <div class="field"><label>安装目录</label><input type="text" id="nacosInstallDir" value="/opt/nacos"></div>
+          <div class="field"><label>Nacos 安装包 *</label><input type="file" id="nacosFile" accept=".tar.gz,.tgz,.tar,.zip">
+            <div class="hint">nacos-server-x.x.x.tar.gz（解压后需含 bin/startup.sh）</div></div>
+        </div>
+      </div>
+
+      <div class="tgroup-title" style="margin-top:12px">数据源（人大金仓 / Kingbase）</div>
+      <div class="nacos-grid">
+        <div class="field"><label>数据库主机 *</label><input type="text" id="kbHost" placeholder="如 10.0.0.5"></div>
+        <div class="field"><label>端口</label><input type="number" id="kbPort" value="54321"></div>
+        <div class="field"><label>数据库名</label><input type="text" id="kbDb" value="nacos_config"></div>
+        <div class="field"><label>账号 *</label><input type="text" id="kbUser"></div>
+        <div class="field"><label>密码 *</label><input type="password" id="kbPassword"></div>
+        <div class="field"><label>JDBC 驱动类</label><input type="text" id="nacosJdbcDriver" value="com.kingbase8.Driver"></div>
+        <div class="field full"><label>JDBC URL（留空按主机/端口/库自动拼接）</label>
+          <input type="text" id="nacosJdbcUrl" placeholder="jdbc:kingbase8://host:port/db"></div>
+        <div class="field full"><label>application.properties 追加配置（可修改 Nacos 配置）</label>
+          <textarea id="nacosExtraProps" rows="4" placeholder="如：nacos.core.auth.enabled=true&#10;nacos.core.auth.plugin.nacos.token.secret.key=YourSecretKey012345678901234567890123456789012345678901234567890123456789&#10;（每行一个配置项）"></textarea>
+          <div class="hint">此处内容会追加到各节点 conf/application.properties（deploy-manager 标记块，重部署可覆盖）；使用前需在 nacos/plugins 下放置 PostgreSQL 数据源插件与 kingbase8 JDBC 驱动，并在 Kingbase 中先建好 nacos_config 库与元数据表。</div>
+        </div>
+      </div>
+
+      <div id="nacosProgress" style="display:none">
+        <div class="progress-overall"><div class="progress-overall-bar" id="nacosOverallBar"></div>
+          <span class="progress-overall-text" id="nacosOverallText"></span></div>
+        <div class="result-banner" id="nacosBanner" style="display:none"></div>
+        <div id="nacosUploadBox" style="display:none">
+          <div class="upload-title" id="nacosUploadText">正在上传文件…</div>
+          <div class="upload-bar-wrap"><div class="upload-bar" id="nacosUploadBar"></div></div>
+          <div class="upload-meta"><span class="upload-pct" id="nacosUploadPct">0%</span>
+            <span class="upload-speed" id="nacosUploadSpeed"></span></div>
+        </div>
+        <ul class="steps" id="nacosStepList"></ul>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnCancelNacos">取消</button>
+      <button class="primary" id="btnDeployNacos">开始部署</button>
+    </div>
+  </div>
+</div>
+
+<!-- 磁盘管理弹窗 -->
+<div class="modal-mask" id="diskModalMask">
+  <div class="modal modal-disk">
+    <div class="modal-head">
+      <span>磁盘管理（自动挂载新磁盘）</span>
+      <button id="btnCloseDisk">关闭</button>
+    </div>
+    <div class="modal-body disk-body">
+      <div class="disk-row">
+        <label class="disk-field"><span>服务器</span>
+          <select id="diskServerSel"></select>
+        </label>
+        <button id="btnDiskScan">扫描磁盘（fdisk -l）</button>
+        <span class="disk-hint" id="diskScanHint"></span>
+      </div>
+
+      <div id="diskListWrap" style="display:none">
+        <table class="list disk-table">
+          <thead>
+          <tr>
+            <th style="width:42px"><input type="checkbox" id="diskSelAll"></th>
+            <th>设备</th><th>容量</th><th>型号</th><th>文件系统</th><th>挂载点</th><th>状态</th>
+          </tr>
+          </thead>
+          <tbody id="diskBody"></tbody>
+        </table>
+
+        <div class="disk-mount-cfg" id="diskMountCfg" style="display:none">
+          <div class="tgroup-title">挂载配置（仅对勾选的新磁盘生效）</div>
+          <div class="disk-cfg-grid">
+            <label class="disk-field"><span>文件系统</span>
+              <select id="diskFsType">
+                <option value="ext4" selected>ext4</option>
+                <option value="xfs">xfs</option>
+              </select>
+            </label>
+            <label class="check"><input type="checkbox" id="diskAddFstab" checked>
+              写入 /etc/fstab（重启自动挂载）</label>
+          </div>
+          <div class="disk-mp-tip">勾选的磁盘将整盘格式化后挂载；每行可编辑挂载点（默认 /data、/data1…）。<b>此操作会清空磁盘数据，请确认所选磁盘确为全新空盘。</b></div>
+          <div id="diskMpList"></div>
+        </div>
+
+        <details class="disk-raw">
+          <summary>查看 fdisk -l 原始输出</summary>
+          <pre id="diskRawFdisk" class="output"></pre>
+        </details>
+      </div>
+
+      <div id="diskProgress" style="display:none">
+        <div class="progress-overall"><div class="progress-overall-bar" id="diskOverallBar"></div>
+          <span class="progress-overall-text" id="diskOverallText"></span></div>
+        <div class="result-banner" id="diskBanner" style="display:none"></div>
+        <ul class="steps" id="diskStepList"></ul>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnCancelDisk">取消</button>
+      <button class="primary" id="btnMountDisk" disabled>开始挂载</button>
+    </div>
+  </div>
+</div>
+
+  <div id="toast"></div>
+
+<!-- 批量修改 JVM 参数弹窗 -->
+<div class="modal-mask" id="batchJvmModalMask">
+  <div class="modal" style="width:520px">
+    <div class="modal-head">
+      <span>批量修改 JVM 参数</span>
+      <button id="btnCloseBatchJvm">关闭</button>
+    </div>
+    <div class="modal-body" style="grid-template-columns:1fr">
+      <div class="hint" id="batchJvmCount"></div>
+      <div class="field full">
+        <label>修改方式</label>
+        <div class="radio-row">
+          <label class="check"><input type="radio" name="batchJvmMode" id="batchJvmModeOverwrite" value="overwrite" checked> 覆盖现有 JVM 参数</label>
+          <label class="check"><input type="radio" name="batchJvmMode" id="batchJvmModeAppend" value="append"> 追加到现有末尾</label>
+        </div>
+        <div class="hint">覆盖：用下方内容整段替换原 JVM 参数；追加：保留原参数，在其后追加下方内容（空格分隔）。</div>
+      </div>
+      <div class="field full">
+        <label>JVM 参数</label>
+        <input type="text" id="batchJvmOpts" placeholder="-Xms512m -Xmx1024m -Dloader.path=lib -Dfile.encoding=UTF-8">
+        <div class="hint">覆盖模式下留空可清空该参数；仅对勾选的「后端」类型配置生效，前端配置会跳过。</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnCancelBatchJvm">取消</button>
+      <button class="primary" id="btnConfirmBatchJvm">开始修改</button>
+    </div>
+  </div>
+</div>
+
+<!-- 批量修改发布目录（前缀替换）弹窗 -->
+<div class="modal-mask" id="batchDirModalMask">
+  <div class="modal" style="width:480px">
+    <div class="modal-head">
+      <span>批量修改发布目录（前缀替换）</span>
+      <button id="btnCloseBatchDir">关闭</button>
+    </div>
+    <div class="modal-body" style="grid-template-columns:1fr">
+      <div class="hint">将把勾选的发布配置中，以「原前缀」开头的发布目录整体替换为「新前缀」，保留各自子路径。例如 <b>/opt/app/order</b> → <b>/data/app/order</b>。仅命中前缀的项会被修改，其余不受影响。</div>
+      <div class="field">
+        <label>原前缀 *</label>
+        <input type="text" id="batchDirOld" placeholder="如 /opt/app">
+      </div>
+      <div class="field">
+        <label>新前缀 *</label>
+        <input type="text" id="batchDirNew" placeholder="如 /data/app">
+      </div>
+      <div class="hint" id="batchDirCount"></div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnCancelBatchDir">取消</button>
+      <button class="primary" id="btnConfirmBatchDir">开始替换</button>
+    </div>
+  </div>
+</div>
+
+<!-- 本机路径选择弹窗 -->
+<div class="modal-mask" id="pathModalMask">
+  <div class="modal modal-path">
+    <div class="modal-head">
+      <span id="pathModalTitle">📁 选择路径</span>
+      <button id="btnClosePathModal">关闭</button>
+    </div>
+    <div class="path-browser">
+      <div class="path-toolbar">
+        <select id="pathDriveSel" title="切换盘符 / 根目录"></select>
+        <input type="text" id="pathInput" placeholder="输入完整路径后回车跳转">
+        <button type="button" id="btnPathRefresh" title="刷新当前目录">🔄</button>
+      </div>
+      <div class="path-quick" id="pathQuick"></div>
+      <div class="path-list" id="pathList"></div>
+      <div class="path-status">
+        <span id="pathSelectedLabel">未选择</span>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnCancelPathModal">取消</button>
+      <button class="primary" id="btnConfirmPathModal">确认</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/app.js?v=4"></script>
+</body>
+</html>

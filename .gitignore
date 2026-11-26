@@ -1,0 +1,14 @@
+target/
+data/
+*.log
+.idea/
+*.iml
+.DS_Store
+
+# 敏感/本地文件，不推送
+deploy-servers-*.json
+maven-settings.xml
+${project.build.directory}/
+.acl-recovery/
+.codebuddy/
+.workbuddy/
