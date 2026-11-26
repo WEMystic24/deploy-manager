@@ -266,6 +266,12 @@ public class DeployTarget {
         return (isNotBlank(info) && cmd.contains(info)) || (isNotBlank(error) && cmd.contains(error));
     }
 
+    /** 是否显式配置了 info 日志路径（例如日志框架写入的固定路径，与启动命令重定向无关） */
+    @JsonIgnore
+    public boolean hasConfiguredInfoLog() {
+        return isNotBlank(infoLogFile);
+    }
+
     /** 是否显式配置了 error 日志路径（用于决定是否为其创建目录） */
     @JsonIgnore
     public boolean hasConfiguredErrorLog() {

@@ -1144,8 +1144,9 @@ public class DeployService {
         // 最终成功 = 脚本标记成功 且 进程复核确实存活；任一不满足都视为失败
         boolean ok = markedOk && alive;
         String detail;
-        // 自定义启动命令且未引用 {logFile} 时，日志去处由命令自行决定，不再提示具体日志路径
-        boolean hasLog = target.needsLogFile();
+        // 只要真的会用到日志文件（命令重定向 / 显式配置了 info 日志）就提示具体路径，
+        // 否则说明日志去处由自定义命令自行决定
+        boolean hasLog = target.needsLogFile() || target.hasConfiguredInfoLog();
         if (ok) {
             detail = "进程已启动，" + (pidLine.isEmpty() ? "" : pidLine + "，") + "运行 PID=" + pid
                     + (hasLog ? "，日志: " + target.effectiveLogFile() : "（自定义启动命令，日志输出由命令决定）");
@@ -1313,13 +1314,9 @@ public class DeployService {
         DeployTarget target = resolveTarget(targetId);
         boolean errorLog = "error".equalsIgnoreCase(type == null ? "" : type.trim());
         String path = target.logFileOf(type);
-        // 自定义启动命令且未引用 info 日志文件时，应用输出不在固定日志里，直接给出说明避免误导。
-        // error 日志通常由应用日志框架单独写入，与启动命令无关，因此不在此拦截。
-        if (!errorLog && !target.needsLogFile()) {
-            return "当前配置使用自定义启动命令，且命令未引用 {logFile}，没有固定的 info 日志文件可查看。\n"
-                    + "如需在此查看日志，可在自定义启动命令中加上重定向，例如：>> " + target.effectiveInfoLogFile()
-                    + " 2>&1 &（或直接引用占位符 {logFile}）。";
-        }
+        // 不再因为「自定义启动命令未引用日志」就直接拒绝读取：
+        // 日志可能由应用日志框架（logback 等）写入固定路径，只要文件在就照常读；
+        // 文件不存在时再在提示里说明可能的原因。
         List<String> keywords = splitKeywords(q);
         SshSession session = null;
         try {
@@ -1339,10 +1336,23 @@ public class DeployService {
             }
             CommandResult r = exec(session, config, script.toString());
             String out = r.getOutput() == null ? "" : r.getOutput();
+            String trimmed = out.trim();
+            // 文件不存在：说明日志文件路径，并按当前配置补充可能的原因
+            if (trimmed.startsWith("日志文件不存在")) {
+                StringBuilder msg = new StringBuilder(trimmed);
+                if (errorLog) {
+                    msg.append("\n请确认日志框架已把 error 日志写入该路径，或在发布配置里修改「error 日志文件」。");
+                } else if (!target.needsLogFile()) {
+                    msg.append("\n当前配置使用自定义启动命令，且命令未把输出重定向到日志文件；")
+                            .append("如果日志由应用日志框架（logback 等）写入，请确认发布配置里的「info 日志文件」路径正确：")
+                            .append(target.effectiveInfoLogFile());
+                }
+                return msg.toString();
+            }
             if (keywords.isEmpty()) {
                 return out;
             }
-            if (out.trim().isEmpty()) {
+            if (trimmed.isEmpty()) {
                 return "未找到匹配内容（关键词：" + joinKeywords(keywords) + "）。\n可尝试减少关键词或调整行数。";
             }
             return out;
