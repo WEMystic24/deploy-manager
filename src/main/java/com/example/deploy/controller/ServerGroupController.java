@@ -53,6 +53,12 @@ public class ServerGroupController {
         return R.ok(groupStore.list());
     }
 
+    /** 拖拽排序：按传入的文件夹名称顺序重排（未出现的文件夹保持原顺序追加在末尾） */
+    @RequestMapping(value = "/reorder", method = {RequestMethod.PUT, RequestMethod.POST})
+    public R<List<String>> reorder(@RequestBody Map<String, List<String>> body) {
+        return R.ok(groupStore.reorder(body == null ? null : body.get("names")));
+    }
+
     /** 删除文件夹，其下服务器自动变为「未分组」 */
     @DeleteMapping("/{name}")
     public R<List<String>> delete(@PathVariable("name") String name) {

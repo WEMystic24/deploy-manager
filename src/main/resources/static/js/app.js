@@ -7,6 +7,7 @@
   var groups = [];               // 服务器文件夹（分组）列表，有序
   var expandedFolders = {};      // 文件夹名 -> true 表示已展开；默认全部折叠（无记录 = 折叠）
   var dragServerId = null;       // 当前正在拖拽的服务器 id（HTML5 拖拽）
+  var dragFolderName = null;     // 当前正在拖拽的文件夹名（HTML5 拖拽，用于调整文件夹顺序）
   var dragTargetId = null;       // 当前正在拖拽的发布配置 id（HTML5 拖拽）
   var selectedTargetIds = {};    // 勾选（待顺序发布 / 批量重启）的发布配置 id -> true
   var selectedTargetMap = {};    // 勾选的发布配置详情 targetId -> target（含 serverId），支持跨服务器勾选后并行发布
@@ -332,22 +333,97 @@
         }
         renderServerList();
       };
-      // 文件夹头部作为拖拽放置目标：把服务器拖进来即归类
+      // 文件夹头部既是「服务器」的放置目标（拖进来即归类），也是「文件夹」的放置目标（拖拽调整顺序）
       head.addEventListener('dragover', function (e) {
+        if (dragFolderName) {
+          // 拖文件夹：落点按鼠标在上半/下半决定插到目标之前还是之后；「未分组」固定置底，不接受排序
+          if (isUngrouped || dragFolderName === name) {
+            return;
+          }
+          e.preventDefault();
+          if (e.dataTransfer) {
+            e.dataTransfer.dropEffect = 'move';
+          }
+          var after = dropAfterHalf(e);
+          head.classList.toggle('drop-after', after);
+          head.classList.toggle('drop-before', !after);
+          return;
+        }
         if (!dragServerId) return;
         e.preventDefault();
         head.classList.add('drop-target');
       });
-      head.addEventListener('dragleave', function () {
+      head.addEventListener('dragleave', function (e) {
+        // 在 head 内部的子元素之间移动时 relatedTarget 仍在 head 内，不清除指示线，避免闪烁
+        if (e.relatedTarget && head.contains(e.relatedTarget)) {
+          return;
+        }
         head.classList.remove('drop-target');
+        head.classList.remove('drop-before');
+        head.classList.remove('drop-after');
       });
       head.addEventListener('drop', function (e) {
+        var after = dropAfterHalf(e);
+        head.classList.remove('drop-target');
+        head.classList.remove('drop-before');
+        head.classList.remove('drop-after');
+        if (dragFolderName) {
+          e.preventDefault();
+          var dragged = dragFolderName;
+          dragFolderName = null;
+          reorderFolders(dragged, name, after);
+          return;
+        }
         if (!dragServerId) return;
         e.preventDefault();
-        head.classList.remove('drop-target');
         moveServerToGroup(dragServerId, name);
       });
+      // 展开后的服务器列表区域也接受文件夹拖放：落在列表里视为「插到该文件夹之后」，
+      // 避免只能精确对准文件夹标题条才能拖动排序
+      childUl.addEventListener('dragover', function (e) {
+        if (!dragFolderName || isUngrouped || dragFolderName === name) {
+          return;
+        }
+        e.preventDefault();
+        if (e.dataTransfer) {
+          e.dataTransfer.dropEffect = 'move';
+        }
+        head.classList.add('drop-after');
+      });
+      childUl.addEventListener('dragleave', function (e) {
+        if (e.relatedTarget && childUl.contains(e.relatedTarget)) {
+          return;
+        }
+        head.classList.remove('drop-after');
+      });
+      childUl.addEventListener('drop', function (e) {
+        if (!dragFolderName) {
+          return;
+        }
+        e.preventDefault();
+        var dragged = dragFolderName;
+        dragFolderName = null;
+        head.classList.remove('drop-after');
+        reorderFolders(dragged, name, true);
+      });
       if (!isUngrouped) {
+        // 拖拽排序：与服务器列表一致，直接按住文件夹名拖动即可
+        head.draggable = true;
+        head.title = '拖拽可调整文件夹顺序；点击展开 / 折叠';
+        head.addEventListener('dragstart', function (e) {
+          dragFolderName = name;
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', name);
+          }
+          section.classList.add('dragging');
+        });
+        head.addEventListener('dragend', function () {
+          dragFolderName = null;
+          section.classList.remove('dragging');
+          head.classList.remove('drop-before');
+          head.classList.remove('drop-after');
+        });
         var ren = head.querySelector('.folder-rename');
         if (ren) {
           ren.onclick = function (e) { e.stopPropagation(); renameGroup(name); };
@@ -393,6 +469,51 @@
         toast('已移动到「' + (folderName || '未分组') + '」', 'ok');
       })
       .catch(function (e) { toast(e.message, 'err'); });
+  }
+
+  /** 拖拽落点是在目标元素的上半还是下半（上半插到之前，下半插到之后） */
+  function dropAfterHalf(e) {
+    var rect = e.currentTarget.getBoundingClientRect();
+    return e.clientY > rect.top + rect.height / 2;
+  }
+
+  /**
+   * 文件夹拖拽排序：把 draggedName 插到 targetName 之前 / 之后并持久化。
+   * 顺序基准取自 folderSections()，与左侧树显示顺序一致；「未分组」是虚拟文件夹不参与排序。
+   */
+  function reorderFolders(draggedName, targetName, after) {
+    if (!draggedName || !targetName || draggedName === targetName || targetName === '未分组') {
+      return;
+    }
+    var order = folderSections().map(function (s) { return s.name; })
+      .filter(function (n) { return n !== '未分组'; });
+    if (order.indexOf(draggedName) < 0 || order.indexOf(targetName) < 0) {
+      return;
+    }
+    var without = order.filter(function (n) { return n !== draggedName; });
+    var idx = without.indexOf(targetName);
+    if (idx < 0) {
+      return;
+    }
+    without.splice(after ? idx + 1 : idx, 0, draggedName);
+    if (without.join('\u0001') === order.join('\u0001')) {
+      return; // 位置没变，不必请求后端
+    }
+    groups = without.slice();
+    renderServerList(); // 立即重排，提升交互即时感
+    var targetLabel = targetName;
+    postJson('/api/server-groups/reorder', { names: groups })
+      .then(function (list) {
+        if (list && list.length) {
+          groups = list;
+          renderServerList();
+        }
+        toast('已调整文件夹顺序（' + draggedName + ' → ' + targetLabel + (after ? ' 之后' : ' 之前') + '）', 'ok');
+      })
+      .catch(function (e) {
+        toast(e.message, 'err');
+        loadServers(true); // 失败回滚：重新从后端拉取真实顺序
+      });
   }
 
   /** 生成单个服务器列表项（被文件夹分组渲染复用） */

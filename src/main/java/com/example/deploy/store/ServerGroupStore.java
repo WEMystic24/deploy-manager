@@ -80,6 +80,40 @@ public class ServerGroupStore {
         persist();
     }
 
+    /**
+     * 按给定名称顺序重排文件夹（拖拽排序用）。
+     * <p>只接受已存在的名称，请求里没出现的文件夹按原相对顺序追加到末尾，
+     * 这样即使前端传了过期/伪造的列表也不会丢文件夹。返回重排后的完整列表。
+     */
+    public synchronized List<String> reorder(List<String> names) {
+        if (names == null || names.isEmpty()) {
+            throw new IllegalArgumentException("文件夹顺序不能为空");
+        }
+        List<String> next = new ArrayList<String>();
+        for (String n : names) {
+            if (n == null) {
+                continue;
+            }
+            String name = n.trim();
+            if (name.isEmpty() || next.contains(name) || !groups.contains(name)) {
+                continue;
+            }
+            next.add(name);
+        }
+        if (next.isEmpty()) {
+            throw new IllegalArgumentException("文件夹顺序无效");
+        }
+        for (String g : groups) {
+            if (!next.contains(g)) {
+                next.add(g);
+            }
+        }
+        groups.clear();
+        groups.addAll(next);
+        persist();
+        return list();
+    }
+
     public void delete(String name) {
         if (!groups.remove(name)) {
             throw new IllegalArgumentException("文件夹不存在：" + name);

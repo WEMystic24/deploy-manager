@@ -169,6 +169,19 @@ header.topbar .sub {
   outline-offset: -2px;
 }
 
+/* 文件夹拖拽排序：拖起时整块半透明，落点用上下两条线表示插到之前 / 之后 */
+.folder.dragging {
+  opacity: 0.45;
+}
+
+.folder-head.drop-before {
+  box-shadow: inset 0 3px 0 var(--primary);
+}
+
+.folder-head.drop-after {
+  box-shadow: inset 0 -3px 0 var(--primary);
+}
+
 #serverList {
   list-style: none;
   max-height: calc(100vh - 160px);
