@@ -3504,6 +3504,200 @@
     el.className = 'sftp-msg' + (type ? ' ' + type : '');
   }
 
+  // ------------------------------------------------------------ 发布配置：从 SFTP 选取路径
+
+  /** 当前选择的目标字段（对应 id t-<field>）、模式（dir/file）、服务器与浏览目录 */
+  var rpField = '';
+  var rpMode = 'dir';
+  var rpServerId = '';
+  var rpPath = '';
+  var rpSeq = 0;
+
+  /**
+   * 打开发布配置里的远程路径选择弹窗
+   * @param {string} field 目标字段名，如 remoteDir / confDir / infoLogFile
+   * @param {string} mode  dir=选目录，file=选文件（也可先选目录再手填文件名）
+   */
+  function openRemotePathPicker(field, mode) {
+    var el = $('t-' + field);
+    if (!el) {
+      return;
+    }
+    var sid = ($('t-serverId') && $('t-serverId').value) || (current && current.id) || '';
+    if (!sid) {
+      toast('请先选择服务器', 'err');
+      return;
+    }
+    rpField = field;
+    rpMode = mode === 'file' ? 'file' : 'dir';
+    rpServerId = sid;
+    $('rpServer').textContent = current ? '（' + current.name + '）' : '';
+    $('rpModeHint').textContent = rpMode === 'file'
+      ? '（日志文件还没生成时，可先选目录，再在输入框里补文件名）'
+      : '';
+    $('remotePathMask').classList.add('show');
+    rpLoad(rpStartPath(el.value), 3);
+  }
+
+  function closeRemotePathPicker() {
+    $('remotePathMask').classList.remove('show');
+  }
+
+  /** 初始目录：字段已是绝对路径就从它开始（文件取其所在目录），否则用 jar 包目录，最后退回家目录 */
+  function rpStartPath(value) {
+    var v = (value || '').trim();
+    if (v.charAt(0) === '/') {
+      return rpMode === 'file' ? (v.replace(/\/[^/]*$/, '') || '/') : v;
+    }
+    var rd = ($('t-remoteDir').value || '').trim();
+    return rd.charAt(0) === '/' ? rd : '';
+  }
+
+  /** 加载远程目录；retry 表示目录不存在时向上回退的层数（日志/备份目录常常还没创建） */
+  function rpLoad(path, retry) {
+    var reqPath = path || '';
+    var seq = ++rpSeq;
+    var listEl = $('rpList');
+    rpPath = reqPath;
+    $('rpCurrent').textContent = reqPath || '/';
+    $('rpPathInput').value = reqPath;
+    listEl.innerHTML = '<div class="path-empty">加载中…</div>';
+    getJson('/api/servers/' + rpServerId + '/sftp/list?path=' + encodeURIComponent(reqPath))
+      .then(function (dir) {
+        if (seq !== rpSeq) {
+          return;
+        }
+        rpRender(dir);
+      })
+      .catch(function (e) {
+        if (seq !== rpSeq) {
+          return;
+        }
+        var msg = (e && e.message) || '';
+        var n = retry === undefined ? 0 : retry;
+        // 只有“目录不存在/不可访问”才逐级向上回退；连接失败等别再重试，避免白等多次超时
+        var missing = /不存在|No such file|not a directory|无法访问该路径|列目录失败/i.test(msg);
+        if (missing && reqPath && n > 0) {
+          var parent = reqPath.replace(/\/[^/]+\/?$/, '') || '/';
+          if (parent !== reqPath) {
+            rpLoad(parent, n - 1);
+            return;
+          }
+        }
+        listEl.innerHTML = '<div class="path-empty">' + escapeHtml(msg || '加载失败') + '</div>';
+      });
+  }
+
+  function rpRender(dir) {
+    rpPath = dir.path || rpPath;
+    $('rpCurrent').textContent = rpPath || '/';
+    $('rpPathInput').value = rpPath || '';
+    var listEl = $('rpList');
+    var html = '';
+    if (rpPath && rpPath !== '/') {
+      html += '<div class="path-row up" data-up="1"><span class="path-ico">↰</span><span class="path-name">.. 上一级目录</span></div>';
+    }
+    var entries = (dir.entries || []).slice();
+    entries.sort(function (a, b) {
+      if (!!a.dir !== !!b.dir) {
+        return a.dir ? -1 : 1;
+      }
+      return String(a.name).localeCompare(String(b.name));
+    });
+    var base = (rpPath || '').replace(/\/$/, '');
+    entries.forEach(function (e) {
+      var full = base + '/' + e.name;
+      var nm = '<span class="path-name" title="' + escapeHtml(full) + '">' + escapeHtml(e.name) + '</span>';
+      var pick = '<button type="button" class="rp-pick" data-use="' + escapeHtml(full) + '">'
+        + (e.dir ? '选此目录' : '选它') + '</button>';
+      if (e.dir) {
+        html += '<div class="path-row" data-dir="' + escapeHtml(full) + '">'
+          + '<span class="path-ico">📁</span>' + nm + pick + '</div>';
+      } else {
+        html += '<div class="path-row" data-file="' + escapeHtml(full) + '">'
+          + '<span class="path-ico">📄</span>' + nm
+          + '<span class="path-size">' + escapeHtml(formatSize(e.size)) + '</span>' + pick + '</div>';
+      }
+    });
+    listEl.innerHTML = html || '<div class="path-empty">空目录</div>';
+  }
+
+  /** 把路径写进正在编辑的配置字段（并触发 input，让启动命令预览同步刷新） */
+  function rpApply(path) {
+    var el = $('t-' + rpField);
+    if (!el) {
+      closeRemotePathPicker();
+      return;
+    }
+    el.value = path;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    closeRemotePathPicker();
+    toast('已填入：' + path, 'ok');
+  }
+
+  function initRemotePathPicker() {
+    var listEl = $('rpList');
+    if (!listEl) {
+      return;
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('.pick-path'), function (btn) {
+      btn.onclick = function () {
+        openRemotePathPicker(btn.getAttribute('data-field'), btn.getAttribute('data-mode'));
+      };
+    });
+    listEl.onclick = function (ev) {
+      var t = ev.target;
+      var use = t.closest ? t.closest('.rp-pick') : null;
+      if (use) {
+        ev.stopPropagation();
+        rpApply(use.getAttribute('data-use'));
+        return;
+      }
+      var row = t.closest ? t.closest('.path-row') : null;
+      if (!row) {
+        return;
+      }
+      if (row.hasAttribute('data-up')) {
+        if (rpPath && rpPath !== '/') {
+          rpLoad(rpPath.replace(/\/[^/]+\/?$/, '') || '/', 0);
+        }
+        return;
+      }
+      var d = row.getAttribute('data-dir');
+      if (d) {
+        rpLoad(d, 0);
+        return;
+      }
+      var f = row.getAttribute('data-file');
+      if (f) {
+        rpApply(f);
+      }
+    };
+    $('btnCloseRemotePath').onclick = closeRemotePathPicker;
+    $('btnRpCancel').onclick = closeRemotePathPicker;
+    $('btnRpUp').onclick = function () {
+      if (rpPath && rpPath !== '/') {
+        rpLoad(rpPath.replace(/\/[^/]+\/?$/, '') || '/', 0);
+      }
+    };
+    $('btnRpRefresh').onclick = function () { rpLoad(rpPath, 1); };
+    $('btnRpCopy').onclick = function () {
+      var p = $('rpCurrent').textContent || rpPath || '/';
+      copyText(p).then(function () { toast('已复制：' + p, 'ok'); },
+        function () { toast('复制失败，请手动复制', 'err'); });
+    };
+    $('btnRpConfirm').onclick = function () {
+      rpApply(rpPath || '/');
+    };
+    $('rpPathInput').onkeydown = function (ev) {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        var v = this.value.trim();
+        rpLoad(v, 2);
+      }
+    };
+  }
+
   // ------------------------------------------------------------ 命令行执行（终端式）
 
   /** 当前服务器的终端工作目录（服务端按 server 维护，cd 后更新） */
@@ -4347,6 +4541,8 @@
         loadPathDir(this.value.trim());
       }
     };
+    // 发布配置里的「从 SFTP 选…」：浏览服务器目录并填入 jar 包目录 / conf / 日志 / 备份路径
+    initRemotePathPicker();
     // 发布配置编辑弹窗内的「本机路径发布」：先保存配置，再用弹窗里填写的本机路径发布
     $('btnTargetDeployLocal').onclick = function () {
       if (!current || !currentTarget) {

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Java 发布管理平台</title>
-  <link rel="stylesheet" href="css/style.css?v=5">
+  <link rel="stylesheet" href="css/style.css?v=7">
 </head>
 <body>
 
@@ -412,7 +412,10 @@
 
       <div class="field full">
         <label id="t-remoteDirLabel">jar 包目录 *</label>
-        <input type="text" id="t-remoteDir" placeholder="/opt/app/order">
+        <div class="row">
+          <input type="text" class="grow" id="t-remoteDir" placeholder="/opt/app/order">
+          <button type="button" class="pick-path" data-field="remoteDir" data-mode="dir" title="在 SFTP 浏览中选择远程目录">浏览</button>
+        </div>
         <div class="hint" id="t-remoteDirHint">jar 包上传到该目录，目录不存在会自动创建；应用也在该目录下启动</div>
       </div>
 
@@ -420,7 +423,10 @@
       <div class="backend-only conf-fields">
         <div class="field full">
           <label>conf 目录</label>
-          <input type="text" id="t-confDir" placeholder="留空默认 jar 包目录/conf">
+          <div class="row">
+            <input type="text" class="grow" id="t-confDir" placeholder="留空默认 jar 包目录/conf">
+            <button type="button" class="pick-path" data-field="confDir" data-mode="dir" title="在 SFTP 浏览中选择远程目录">浏览</button>
+          </div>
           <div class="hint">yml / properties 等配置文件所在目录，选填；留空则使用「jar 包目录/conf」。已配置该目录时发布会自动创建。</div>
         </div>
         <div class="field full">
@@ -450,17 +456,26 @@
             </div>
             <div class="field">
               <label>info 日志文件</label>
-              <input type="text" id="t-infoLogFile" placeholder="留空默认 jar 包目录/logs/jar名.log">
+              <div class="row">
+                <input type="text" class="grow" id="t-infoLogFile" placeholder="留空默认 jar 包目录/logs/jar名.log">
+                <button type="button" class="pick-path" data-field="infoLogFile" data-mode="file" title="在 SFTP 浏览中选择日志文件（文件还不存在时可先选目录）">浏览</button>
+              </div>
               <div class="hint">默认启动命令的输出去向；运行日志页「info」页签读取该文件</div>
             </div>
             <div class="field">
               <label>error 日志文件</label>
-              <input type="text" id="t-errorLogFile" placeholder="留空默认 jar 包目录/logs/jar名-error.log">
+              <div class="row">
+                <input type="text" class="grow" id="t-errorLogFile" placeholder="留空默认 jar 包目录/logs/jar名-error.log">
+                <button type="button" class="pick-path" data-field="errorLogFile" data-mode="file" title="在 SFTP 浏览中选择日志文件（文件还不存在时可先选目录）">浏览</button>
+              </div>
               <div class="hint">错误日志（通常由 logback 等日志框架写入）；「error」页签读取该文件</div>
             </div>
             <div class="field">
               <label>备份目录</label>
-              <input type="text" id="t-backupDir" placeholder="留空默认 jar 包目录/backup">
+              <div class="row">
+                <input type="text" class="grow" id="t-backupDir" placeholder="留空默认 jar 包目录/backup">
+                <button type="button" class="pick-path" data-field="backupDir" data-mode="dir" title="在 SFTP 浏览中选择远程目录">浏览</button>
+              </div>
             </div>
             <div class="field">
               <label class="check"><input type="checkbox" id="t-backupEnabled"> 发布前备份</label>
@@ -571,6 +586,32 @@
       <button id="btnCancelTarget">取消</button>
       <button id="btnSaveAndUpload" title="保存配置并把所选 jar / conf 文件上传到服务器：只更新文件，不备份、不停止、不重启。需要部署请用卡片上的「一键发布」">保存并上传文件</button>
       <button class="primary" id="btnSaveTarget" title="只保存配置，不上传文件、不部署">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 远程路径选择弹窗：发布配置里的「SFTP…」按钮打开，浏览服务器目录并一键填入 / 复制路径 -->
+<div class="modal-mask" id="remotePathMask">
+  <div class="modal modal-path modal-remote-path">
+    <div class="modal-head">
+      <span>🌐 从 SFTP 选择路径 <span class="rp-server" id="rpServer"></span></span>
+      <button id="btnCloseRemotePath">关闭</button>
+    </div>
+    <div class="path-browser">
+      <div class="path-toolbar">
+        <button type="button" id="btnRpUp" title="上一级目录">↑ 上级</button>
+        <input type="text" id="rpPathInput" placeholder="输入远程绝对路径后回车跳转，如 /opt/app/order/logs" spellcheck="false">
+        <button type="button" id="btnRpRefresh" title="刷新当前目录">🔄</button>
+      </div>
+      <div class="path-list" id="rpList"></div>
+      <div class="path-status">
+        当前目录：<span id="rpCurrent"></span><span class="rp-mode-hint" id="rpModeHint"></span>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnRpCancel">取消</button>
+      <button id="btnRpCopy" title="复制当前目录的完整路径">复制路径</button>
+      <button class="primary" id="btnRpConfirm">使用当前目录</button>
     </div>
   </div>
 </div>
@@ -839,6 +880,6 @@
   </div>
 </div>
 
-<script src="js/app.js?v=9"></script>
+<script src="js/app.js?v=10"></script>
 </body>
 </html>

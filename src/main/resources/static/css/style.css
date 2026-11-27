@@ -2259,6 +2259,62 @@ button.btn-restart:hover {
   color: var(--primary);
 }
 
+/* ---------- 发布配置里「从 SFTP 选路径」按钮（其余外观沿用默认 button，与「浏览…」一致） ---------- */
+.pick-path {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* ---------- 远程路径选择弹窗（浏览服务器目录并填入配置） ---------- */
+/* 层级：动态码弹窗 > 远程选路径 > 发布配置弹窗 */
+#remotePathMask { z-index: 60; }
+#otpMask { z-index: 80; }
+
+.modal.modal-remote-path {
+  width: 660px;
+  max-width: 94vw;
+}
+
+.rp-server {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-sub);
+  margin-left: 6px;
+}
+
+.modal-remote-path .path-list {
+  height: min(52vh, 420px);
+}
+
+.modal-remote-path .path-row .path-name {
+  min-width: 0;
+}
+
+/* 行内「选此目录 / 选它」小按钮 */
+.rp-pick {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: #eef2f7;
+  border: 1px solid var(--border);
+  color: var(--text-sub);
+  cursor: pointer;
+  line-height: 18px;
+}
+
+.rp-pick:hover {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.rp-mode-hint {
+  color: #9aa5b1;
+  margin-left: 8px;
+}
+
+
 
 /* 自定义部署：多 jar 包列表 */
 .jar-chip-list {
