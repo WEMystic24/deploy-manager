@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Java 发布管理平台</title>
-  <link rel="stylesheet" href="css/style.css?v=3">
+  <link rel="stylesheet" href="css/style.css?v=5">
 </head>
 <body>
 
@@ -188,6 +188,7 @@
     <div class="sftp-head">
       <span>SFTP 文件浏览</span>
       <div class="btns">
+        <button id="btnSftpCopyPath" title="复制当前目录的完整路径（方便粘贴到日志路径、JVM 参数等配置里）">复制路径</button>
         <button id="btnSftpRefresh">刷新</button>
         <button id="btnSftpClose" title="收起 SFTP 文件浏览">×</button>
       </div>
@@ -838,6 +839,6 @@
   </div>
 </div>
 
-<script src="js/app.js?v=7"></script>
+<script src="js/app.js?v=9"></script>
 </body>
 </html>

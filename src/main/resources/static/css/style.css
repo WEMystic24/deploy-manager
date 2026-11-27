@@ -1200,8 +1200,9 @@ table.list th {
 
 /* ---------- 右侧 SFTP 面板 ---------- */
 .sftp-panel {
-  width: 340px;
-  flex: 0 0 340px;
+  /* 默认宽度跟随视口（1366 屏约 464px、1920 屏封顶 500px），避免默认太窄挤压文件名 */
+  width: min(500px, 34vw);
+  flex: 0 0 min(500px, 34vw);
   position: relative;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -1249,9 +1250,22 @@ body.sftp-resizing {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   font-weight: 600;
+}
+
+/* 标题过长/面板过窄时截断，优先保证右侧按钮不被挤压 */
+.sftp-head > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sftp-head .btns {
+  flex: 0 0 auto;
 }
 
 .sftp-head .btns #btnSftpClose {
@@ -1323,16 +1337,20 @@ body.sftp-resizing {
 .sftp-list {
   list-style: none;
   overflow-y: auto;
+  /* 竖滚动条会吃掉约 15px 宽度，禁掉横向滚动，避免出现“双滚动条 + 文件名挤成竖排” */
+  overflow-x: hidden;
   flex: 1;
+  min-width: 0;
 }
 
 .sftp-list li {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 14px;
+  padding: 7px 12px 7px 14px;
   border-bottom: 1px solid #f0f2f5;
   cursor: default;
+  min-width: 0;
 }
 
 .sftp-list li.dir {
@@ -1347,15 +1365,21 @@ body.sftp-resizing {
   width: 18px;
   text-align: center;
   font-size: 14px;
+  flex: 0 0 auto;
 }
 
 .sftp-list li.dir .ic {
   color: var(--warn);
 }
 
+/* 文件名：占满剩余宽度；长名字按单词断行，实在没有断点才 anywhere，
+   并用 min-width:0 避免被固定列挤成“一列一个字” */
 .sftp-list .nm {
-  flex: 1;
-  word-break: break-all;
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
 
 .sftp-list li.dir .nm {
@@ -1364,17 +1388,33 @@ body.sftp-resizing {
 }
 
 .sftp-list .sz {
+  flex: 0 0 auto;
   color: var(--text-sub);
   font-size: 12px;
-  min-width: 64px;
+  min-width: 46px;
+  white-space: nowrap;
   text-align: right;
 }
 
 .sftp-list .mt {
+  flex: 0 0 auto;
   color: #9aa5b1;
   font-size: 11px;
-  min-width: 120px;
+  white-space: nowrap;
   text-align: right;
+}
+
+/* 窄面板优先保证文件名：先隐藏时间列，再隐藏大小列（由 JS 按实际宽度切类） */
+.sftp-panel.sftp-hide-time .sftp-list .mt {
+  display: none;
+}
+
+.sftp-panel.sftp-hide-size .sftp-list .sz {
+  display: none;
+}
+
+.sftp-panel.sftp-hide-time .sftp-list li {
+  gap: 6px;
 }
 
 .sftp-list .empty, .sftp-list .loading {
@@ -1422,6 +1462,47 @@ body.sftp-resizing {
 .sftp-dl:hover {
   background: #eff6ff;
   color: var(--primary);
+}
+
+/* ---------- SFTP 复制路径按钮（列表行 + 面板头部） ---------- */
+.sftp-cp {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  opacity: .35;
+  flex: 0 0 auto;
+  line-height: 1;
+}
+
+.sftp-list li:hover .sftp-cp {
+  opacity: 1;
+}
+
+.sftp-cp:hover {
+  background: #ecfdf5;
+  color: var(--success);
+}
+
+.sftp-cp.copied {
+  opacity: 1;
+  background: #dcfce7;
+  color: var(--success);
+}
+
+.sftp-head .btns #btnSftpCopyPath {
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 24px;
+  height: 26px;
+  white-space: nowrap;
+}
+
+.sftp-head .btns #btnSftpCopyPath.copied {
+  border-color: var(--success);
+  color: var(--success);
 }
 
 /* ---------- 一键重启按钮 ---------- */

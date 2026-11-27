@@ -3245,6 +3245,53 @@
     }
   }
 
+  /** 复制文本到剪贴板：优先 Clipboard API，非 https/localhost 等不安全上下文降级为隐藏 textarea */
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var ta = null;
+      try {
+        ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', 'readonly');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        var ok = document.execCommand('copy');
+        if (ok) { resolve(); } else { reject(new Error('复制失败')); }
+      } catch (e) {
+        reject(e);
+      } finally {
+        if (ta && ta.parentNode) { ta.parentNode.removeChild(ta); }
+      }
+    });
+  }
+
+  /** 复制路径：成功后按钮短暂打勾，并在面板内提示已复制内容 */
+  function copySftpPath(path, btn) {
+    var p = path || sftpCurrentPath || '/';
+    copyText(p).then(function () {
+      showSftpMsg('已复制：' + p, 'ok');
+      if (btn) {
+        var old = btn.getAttribute('data-label') || btn.textContent;
+        btn.setAttribute('data-label', old);
+        btn.textContent = '✓';
+        btn.classList.add('copied');
+        setTimeout(function () {
+          btn.textContent = old;
+          btn.classList.remove('copied');
+        }, 1200);
+      }
+    }).catch(function () {
+      showSftpMsg('复制失败，请手动选择后复制：' + p, 'err');
+    });
+  }
+
   /** 加载远程目录（path 为空则家目录） */
   function loadSftp(path) {
     if (!current) {
@@ -3278,20 +3325,24 @@
       var full = (sftpCurrentPath.replace(/\/$/, '')) + '/' + e.name;
       var rowCls = e.dir ? 'dir' : '';
       var attr = e.dir ? ' data-path="' + escapeHtml(full) + '"' : '';
-      // 文件才显示下载按钮（目录不下载）
+      // 文件才显示下载按钮（目录不下载）；文件和目录都能复制完整路径
       var dlBtn = e.dir ? '' : '<button class="sftp-dl" data-dl="' + escapeHtml(full) + '" title="下载">⬇</button>';
+      var cpBtn = '<button class="sftp-cp" data-copy="' + escapeHtml(full) + '" title="复制完整路径">📋</button>';
       return '<li class="' + rowCls + '"' + attr + '>'
         + '<span class="ic">' + ic + '</span>'
         + '<span class="nm">' + escapeHtml(e.name) + '</span>'
         + '<span class="sz">' + escapeHtml(sz) + '</span>'
         + '<span class="mt">' + escapeHtml(e.modTime || '') + '</span>'
         + dlBtn
+        + cpBtn
         + '<button class="sftp-del" data-del="' + escapeHtml(full) + '" title="删除">🗑</button>'
         + '</li>';
     }).join('');
     Array.prototype.forEach.call(listEl.querySelectorAll('li.dir'), function (li) {
       li.onclick = function (ev) {
-        if (ev.target && (ev.target.classList.contains('sftp-del') || ev.target.classList.contains('sftp-dl'))) {
+        if (ev.target && (ev.target.classList.contains('sftp-del')
+          || ev.target.classList.contains('sftp-dl')
+          || ev.target.classList.contains('sftp-cp'))) {
           return;
         }
         loadSftp(li.getAttribute('data-path'));
@@ -3307,6 +3358,12 @@
       btn.onclick = function (ev) {
         ev.stopPropagation();
         sftpDownload(btn.getAttribute('data-dl'));
+      };
+    });
+    Array.prototype.forEach.call(listEl.querySelectorAll('.sftp-cp'), function (btn) {
+      btn.onclick = function (ev) {
+        ev.stopPropagation();
+        copySftpPath(btn.getAttribute('data-copy'), btn);
       };
     });
   }
@@ -4418,6 +4475,13 @@
     };
 
     // SFTP 文件浏览面板
+    $('btnSftpCopyPath').onclick = function () {
+      if (!sftpCurrentPath) {
+        showSftpMsg('请先进入一个目录再复制路径', 'err');
+        return;
+      }
+      copySftpPath(sftpCurrentPath, this);
+    };
     $('btnSftpRefresh').onclick = function () {
       loadSftp(sftpCurrentPath);
     };
@@ -4511,11 +4575,16 @@
     if (!panel || !handle) {
       return;
     }
-    var saved = parseInt(localStorage.getItem('sftpPanelWidth'), 10);
+    // 宽度记忆改用新键：旧键里的 340px（旧默认）会把列表挤成“一列一个字”，
+    // 直接丢弃一次，让用户先看到新的自适应默认宽度，之后拖拽的宽度照常记忆。
+    var WIDTH_KEY = 'sftpPanelWidth2';
+    localStorage.removeItem('sftpPanelWidth');
+    var saved = parseInt(localStorage.getItem(WIDTH_KEY), 10);
     if (saved >= 280 && saved <= 820) {
       panel.style.flex = '0 0 ' + saved + 'px';
       panel.style.width = saved + 'px';
     }
+    adaptSftpWidth(panel);
     var startX = 0, startW = 0, dragging = false;
     handle.addEventListener('mousedown', function (e) {
       dragging = true;
@@ -4539,8 +4608,37 @@
       }
       dragging = false;
       document.body.classList.remove('sftp-resizing');
-      localStorage.setItem('sftpPanelWidth', Math.round(panel.getBoundingClientRect().width));
+      localStorage.setItem('sftpPanelWidth2', Math.round(panel.getBoundingClientRect().width));
     });
+  }
+
+  /**
+   * 按面板实际宽度切换紧凑类：面板窄时先隐藏修改时间、再隐藏大小，
+   * 把有限宽度让给文件名，避免长文件夹名被挤成“一列一个字”。
+   */
+  function adaptSftpWidth(panel) {
+    if (!panel) {
+      return;
+    }
+    var apply = function (w) {
+      if (!w) {
+        return; // 面板收起时宽度为 0，保持上一次状态
+      }
+      panel.classList.toggle('sftp-hide-time', w < 470);
+      panel.classList.toggle('sftp-hide-size', w < 350);
+    };
+    apply(panel.getBoundingClientRect().width);
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', function () { apply(panel.getBoundingClientRect().width); });
+      return;
+    }
+    var ro = new ResizeObserver(function (entries) {
+      if (!entries || !entries.length) {
+        return;
+      }
+      apply(entries[0].contentRect.width);
+    });
+    ro.observe(panel);
   }
 
   // ------------------------------------------------------------ Nacos 集群部署
