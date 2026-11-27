@@ -89,7 +89,7 @@
 | jar 包名称 jarName | 默认部署必填 | 远端统一文件名（如 `order-service.jar`），上传的任何文件名都会改成它。同时是进程定位（pgrep/pkill）与备份文件名前缀的依据 |
 | 部署方式 deployMode | 否 | `default` / `custom`，仅后端类型有效，默认 `default` |
 | jar 包列表 jarNames | 自定义部署 | **由上传的 jar 文件自动识别，页面不提供手填**。上传时**保持原文件名**（不重命名）；启停识别、备份与回滚都以该列表为依据，可在弹窗里点标签的 × 剔除 |
-| 主 jar 包 primaryJar | 否（自定义部署可选） | 多 jar 时**状态查询 / 看板 PID / 启动后存活判定只认这个 jar**（一般填主服务的 jar）；选「自动」（留空）则任一 jar 运行即算运行、PID 取定位到的第一个。**停止、备份、回滚始终覆盖全部 jar**。填写完整路径时只取末级文件名 |
+| 主 jar 包 primaryJar | 否（自定义部署可选） | **手工填写**（如 `order-api.jar`），多 jar 时**状态查询 / 看板 PID / 启动后存活判定只认这个 jar**（一般填主服务的 jar）；留空则不指定，任一 jar 运行即算运行、PID 取定位到的第一个。**停止、备份、回滚始终覆盖全部 jar**。填完整路径时只取末级文件名 |
 | 自定义启动命令 startCommand | 否 | **默认部署 / 自定义部署通用**，填写后**完全覆盖**默认启动命令：不自动 cd 到 jar 包目录、不校验 jar 是否存在，按原文执行（需后台运行）；留空仍用默认命令。如需在 jar 目录下启动请自行写 `cd {remoteDir} && …`。支持占位符 `{remoteDir} {confDir} {jarName} {jarPath} {jars} {logFile} {pidFile} {javaCmd} {jvmOpts} {appArgs} {backupDir}`，`{jars}` 展开为全部 jar 的完整路径 |
 | conf 目录 confDir | 否 | yml / properties 等配置文件所在目录，必须绝对路径；留空默认 `jar 包目录/conf`。发布时若已配置会自动 `mkdir -p` |
 | 上传 conf 文件 | 否 | 选择后在弹窗里点「保存并上传文件」才会上传到 conf 目录（**同名覆盖，不重启应用**，只取文件名不保留子目录）；只点「保存」不会上传。接口 `POST /api/deploy/{id}/conf-upload` |

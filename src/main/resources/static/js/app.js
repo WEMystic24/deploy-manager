@@ -1038,15 +1038,12 @@
     $('copyToModalMask').classList.remove('show');
   }
 
-  var TARGET_FIELDS = ['id', 'serverId', 'name', 'remoteDir', 'confDir', 'jarName', 'javaCmd', 'jvmOpts',
-    'appArgs', 'infoLogFile', 'errorLogFile', 'backupDir', 'preStartCmd', 'postStartCmd', 'localPath',
+  var TARGET_FIELDS = ['id', 'serverId', 'name', 'remoteDir', 'confDir', 'jarName', 'javaCmd', 'primaryJar',
+    'jvmOpts', 'appArgs', 'infoLogFile', 'errorLogFile', 'backupDir', 'preStartCmd', 'postStartCmd', 'localPath',
     'type', 'frontendPath', 'frontendPostCmd', 'zip', 'deployMode', 'startCommand'];
 
   /** 弹窗内「自定义部署」的 jar 包列表（多个 jar 统一上传更新） */
   var jarChips = [];
-
-  /** 弹窗内选中的「主 jar 包」（状态查询用；空字符串 = 自动，任一 jar 运行即算运行） */
-  var primaryJarValue = '';
 
   /** 当前弹窗选中的后端部署方式：default / custom */
   function currentDeployMode() {
@@ -1069,7 +1066,6 @@
     box.innerHTML = '';
     if (!jarChips.length) {
       box.innerHTML = '<span class="jar-chip-empty">尚未上传 jar 包，选择上方文件并保存后会自动识别</span>';
-      renderPrimaryJarOptions();
       return;
     }
     jarChips.forEach(function (n, idx) {
@@ -1091,36 +1087,6 @@
       chip.appendChild(del);
       box.appendChild(chip);
     });
-    renderPrimaryJarOptions();
-  }
-
-  /**
-   * 渲染「主 jar 包（状态查询用）」下拉：选项来自已上传的 jar 列表，
-   * 首项为空值表示「自动」——任一 jar 运行即算运行、PID 取第一个。
-   * 已保存的主 jar 若已不在列表里（被移除），仍保留一个带标记的选项，避免静默丢失配置。
-   */
-  function renderPrimaryJarOptions() {
-    var sel = $('t-primaryJar');
-    if (!sel) {
-      return;
-    }
-    var keep = primaryJarValue || sel.value || '';
-    var html = '<option value="">自动（任一 jar 运行即算运行）</option>';
-    jarChips.forEach(function (n) {
-      html += '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>';
-    });
-    if (keep && jarChips.indexOf(keep) < 0) {
-      html += '<option value="' + escapeHtml(keep) + '">' + escapeHtml(keep) + '（已不在列表中）</option>';
-    }
-    sel.innerHTML = html;
-    sel.value = keep;
-    if (sel.value !== keep) {
-      sel.value = ''; // 值已不存在时回落到「自动」
-    }
-    primaryJarValue = sel.value;
-    sel.onchange = function () {
-      primaryJarValue = this.value;
-    };
   }
 
   /** 追加 jar 名称（支持逗号/空格分隔批量输入；去重、只保留 .jar、去掉路径前缀） */
@@ -1409,8 +1375,6 @@
       }
     }
     jarChips = [];
-    // 主 jar 包（状态查询用）：先记下已保存值，jar 列表渲染时会据此选中下拉项
-    primaryJarValue = target && target.primaryJar ? String(target.primaryJar) : '';
     addJarChips(initJars);
     // 自定义启动命令变化时刷新预览
     var scEl = $('t-startCommand');

@@ -455,6 +455,11 @@
               <input type="text" id="t-jarName" placeholder="order-service.jar">
               <div class="hint">远程统一使用该文件名，便于启停与备份</div>
             </div>
+            <div class="field custom-only">
+              <label>主 jar 包（状态查询用）</label>
+              <input type="text" id="t-primaryJar" placeholder="如 order-api.jar" title="多 jar 时状态 / 看板 PID / 启动后存活判定只认这个 jar；留空则不指定（停止、备份仍覆盖全部 jar）">
+              <div class="hint">多 jar 时状态查询只认它，留空不指定</div>
+            </div>
             <div class="field">
               <label>java 命令</label>
               <input type="text" id="t-javaCmd" placeholder="java 或 /usr/local/jdk1.8/bin/java">
@@ -502,11 +507,6 @@
             <label>已上传的 jar 包</label>
             <div class="jar-chip-list" id="t-jarNameList"></div>
             <div class="hint">由上传的 jar 文件自动识别（保持原文件名，不会重命名）；发布时这些 jar 会一起上传更新，也是启停识别 / 备份 / 回滚的依据。如需剔除某个 jar，点标签上的 ×。</div>
-          </div>
-          <div class="field full custom-only">
-            <label>主 jar 包（状态查询用）</label>
-            <select id="t-primaryJar"></select>
-            <div class="hint">多 jar 时，状态 / 看板 PID / 启动后存活判定只认这个 jar（一般填主服务的 jar），避免把同目录另一个 jar 的进程当成主服务；选「自动」则任一 jar 运行即算运行、PID 取定位到的第一个。停止、备份、回滚始终覆盖全部 jar。</div>
           </div>
           <!-- 自定义启动命令：默认部署 / 自定义部署都可用 -->
           <div class="field full">
@@ -882,6 +882,6 @@
   </div>
 </div>
 
-<script src="js/app.js?v=15"></script>
+<script src="js/app.js?v=16"></script>
 </body>
 </html>
