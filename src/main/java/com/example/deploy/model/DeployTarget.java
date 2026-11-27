@@ -106,10 +106,11 @@ public class DeployTarget {
     private boolean clearBeforeDeploy = false;
 
     /**
-     * 发布时是否备份旧版本，默认 false（不备份）。
-     * 勾选后发布前会把旧版本备份到备份目录，可用于回滚；不勾选则跳过备份，发布更快且不占用备份空间。
-     * 注意：不备份时无法回滚到本次发布前的版本。
+     * 历史字段：以前是「发布前备份」开关。
+     * 现在发布前<b>始终</b>备份旧 jar / conf 文件（保留最近 keep-backup-count 个版本），
+     * 该字段只为兼容旧配置文件保留，不再参与任何判断。
      */
+    @Deprecated
     private boolean backupEnabled = false;
 
     /**
@@ -285,11 +286,26 @@ public class DeployTarget {
         return trimSlash(remoteDir) + "/" + stripExt(jarName) + ".pid";
     }
 
+    /**
+     * 备份目录（实际使用的位置）：
+     * <ul>
+     *   <li>填写了 backupDir：用它（目录不存在/不可写时由脚本回退到发布目录）；</li>
+     *   <li>后端未填写：jar 包目录本身（备份与原 jar 同目录、文件名加时间戳后缀）；</li>
+     *   <li>前端未填写：{@code 发布目录/backup}（避免备份包落在站点根目录被外部下载）。</li>
+     * </ul>
+     */
     public String effectiveBackupDir() {
         if (isNotBlank(backupDir)) {
-            return backupDir.trim();
+            return trimSlash(backupDir);
         }
-        return trimSlash(remoteDir) + "/backup";
+        String root = trimSlash(remoteDir);
+        return "frontend".equals(type) ? root + "/backup" : root;
+    }
+
+    /** 是否显式配置了备份目录（决定 jar / conf 备份是集中存放还是各自就地备份） */
+    @JsonIgnore
+    public boolean hasConfiguredBackupDir() {
+        return isNotBlank(backupDir);
     }
 
     /** 配置文件目录：填写则用填写的绝对路径，留空则用 {remoteDir}/conf */
@@ -582,6 +598,8 @@ public class DeployTarget {
         this.clearBeforeDeploy = clearBeforeDeploy;
     }
 
+    /** @deprecated 发布前始终备份，不再读取该开关 */
+    @Deprecated
     public boolean isBackupEnabled() {
         return backupEnabled;
     }

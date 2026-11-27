@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Java 发布管理平台</title>
-  <link rel="stylesheet" href="css/style.css?v=7">
+  <link rel="stylesheet" href="css/style.css?v=8">
 </head>
 <body>
 
@@ -419,6 +419,15 @@
         <div class="hint" id="t-remoteDirHint">jar 包上传到该目录，目录不存在会自动创建；应用也在该目录下启动</div>
       </div>
 
+      <div class="field full">
+        <label>备份目录</label>
+        <div class="row">
+          <input type="text" class="grow" id="t-backupDir" placeholder="留空：后端在 jar 包目录 / conf 目录就地备份">
+          <button type="button" class="pick-path" data-field="backupDir" data-mode="dir" title="在 SFTP 浏览中选择远程目录">浏览</button>
+        </div>
+        <div class="hint">发布前<b>始终自动备份</b>，只保留最近若干个版本。留空时后端就地备份；填写则统一备份到这里。</div>
+      </div>
+
       <!-- 后端专属：conf 目录与配置文件上传 -->
       <div class="backend-only conf-fields">
         <div class="field full">
@@ -451,10 +460,6 @@
               <input type="text" id="t-javaCmd" placeholder="java 或 /usr/local/jdk1.8/bin/java">
             </div>
             <div class="field">
-              <label>JVM 参数</label>
-              <input type="text" id="t-jvmOpts" placeholder="-Xms512m -Xmx1024m -Dfile.encoding=UTF-8">
-            </div>
-            <div class="field">
               <label>info 日志文件</label>
               <div class="row">
                 <input type="text" class="grow" id="t-infoLogFile" placeholder="留空默认 jar 包目录/logs/jar名.log">
@@ -468,18 +473,7 @@
                 <input type="text" class="grow" id="t-errorLogFile" placeholder="留空默认 jar 包目录/logs/jar名-error.log">
                 <button type="button" class="pick-path" data-field="errorLogFile" data-mode="file" title="在 SFTP 浏览中选择日志文件（文件还不存在时可先选目录）">浏览</button>
               </div>
-              <div class="hint">错误日志（通常由 logback 等日志框架写入）；「error」页签读取该文件</div>
-            </div>
-            <div class="field">
-              <label>备份目录</label>
-              <div class="row">
-                <input type="text" class="grow" id="t-backupDir" placeholder="留空默认 jar 包目录/backup">
-                <button type="button" class="pick-path" data-field="backupDir" data-mode="dir" title="在 SFTP 浏览中选择远程目录">浏览</button>
-              </div>
-            </div>
-            <div class="field">
-              <label class="check"><input type="checkbox" id="t-backupEnabled"> 发布前备份</label>
-              <div class="hint">默认不勾选（不备份）。勾选后发布前会把旧版本备份到备份目录，可用于回滚</div>
+              <div class="hint">错误日志,「error」页签读取该文件</div>
             </div>
             <div class="field">
               <label>启动前命令</label>
@@ -489,6 +483,10 @@
               <label>启动后命令</label>
               <input type="text" id="t-postStartCmd" placeholder="可选">
             </div>
+          </div>
+          <div class="field full">
+            <label>JVM 参数</label>
+            <input type="text" id="t-jvmOpts" placeholder="-Xms512m -Xmx1024m -Dfile.encoding=UTF-8">
           </div>
           <div class="field full">
             <label>启动参数</label>
@@ -571,8 +569,7 @@
             <div class="hint">覆盖更新：同名文件被新版本覆盖，旧目录中已删除的文件会残留；清空后更新：先删除「发布目录/本机发布路径末级目录名」整个目录再重建，得到干净目录（发布路径末级为空时跳过清空）</div>
           </div>
           <div class="field full">
-            <label class="check"><input type="checkbox" id="t-backupEnabledFe"> 发布前备份</label>
-            <div class="hint">默认不勾选（不备份）。勾选后发布前会把发布目录备份成 tar.gz 存到备份目录，可用于回滚</div>
+            <div class="hint">发布前会自动把当前发布目录打包成 tar.gz 备份（无需开关）：未填备份目录时存到「发布目录/backup」，只保留最近若干个版本</div>
           </div>
           <div class="field full">
             <label>发布后执行命令</label>
@@ -880,6 +877,6 @@
   </div>
 </div>
 
-<script src="js/app.js?v=10"></script>
+<script src="js/app.js?v=13"></script>
 </body>
 </html>

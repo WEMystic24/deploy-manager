@@ -321,34 +321,24 @@ public class DeployService {
     }
 
     /**
-     * 后端发布步骤声明：未勾选「发布前备份」时不声明备份与清理历史备份步骤，
-     * 步骤序列为 连接→目录→上传→（清理历史备份）→停止→启动。
+     * 后端发布步骤声明：发布前始终备份（旧 jar 备份到备份目录或 jar 包目录本身），
+     * 步骤序列固定为 连接→目录→备份→上传→清理历史备份→停止→启动。
      */
     private void declareBackendSteps(DeployTask task, DeployTarget target, boolean restart) {
-        if (target.isBackupEnabled()) {
-            if (restart) {
-                task.declareSteps("连接服务器", "准备远程目录", "备份旧版本", "上传 jar 包", "清理历史备份", "停止应用", "启动应用");
-            } else {
-                task.declareSteps("连接服务器", "准备远程目录", "备份旧版本", "上传 jar 包", "清理历史备份", "（跳过重启）jar 已就位");
-            }
+        if (restart) {
+            task.declareSteps("连接服务器", "准备远程目录", "备份旧版本", "上传 jar 包", "清理历史备份", "停止应用", "启动应用");
         } else {
-            if (restart) {
-                task.declareSteps("连接服务器", "准备远程目录", "上传 jar 包", "停止应用", "启动应用");
-            } else {
-                task.declareSteps("连接服务器", "准备远程目录", "上传 jar 包", "（跳过重启）jar 已就位");
-            }
+            task.declareSteps("连接服务器", "准备远程目录", "备份旧版本", "上传 jar 包", "清理历史备份", "（跳过重启）jar 已就位");
         }
     }
 
-    /** 前端发布步骤声明：勾选「清空后更新」时在备份后插入「清空目标目录」步骤；未勾选「发布前备份」时省略备份步骤 */
+    /** 前端发布步骤声明：始终备份旧版本；勾选「清空后更新」时在备份后插入「清空目标目录」步骤 */
     private void declareFrontendSteps(DeployTask task, DeployTarget target) {
         String uploadStep = target.isZip() ? "压缩并上传静态资源" : "上传静态资源";
         List<String> steps = new ArrayList<>();
         steps.add("连接服务器");
         steps.add("准备远程目录");
-        if (target.isBackupEnabled()) {
-            steps.add("备份旧版本");
-        }
+        steps.add("备份旧版本");
         if (target.isClearBeforeDeploy()) {
             steps.add("清空目标目录");
         }
@@ -468,9 +458,9 @@ public class DeployService {
                     ? " " + ShellUtil.quote(target.effectiveConfDir()) : "";
             // 日志目录同理：使用自定义启动命令且命令不写日志文件时不创建；error 日志目录仅在显式配置时创建
             String logMk = logDirMk(target);
+            // 备份目录不在这里强制创建：填了但不可写时由备份脚本回退到 jar 包目录，不能因此让整个发布失败
             CommandResult mk = exec(session, config, "mkdir -p " + ShellUtil.quote(target.getRemoteDir())
                     + confMk
-                    + " " + ShellUtil.quote(target.effectiveBackupDir())
                     + logMk);
             if (!mk.isSuccess()) {
                 stepDone(task, 1, false, mk.getOutput(), t);
@@ -480,18 +470,16 @@ public class DeployService {
             }
             stepDone(task, 1, true, target.getRemoteDir(), t);
 
-            // 2. 备份旧包（可选：勾选「发布前备份」才执行；不勾选则跳过，后续步骤索引整体前移一位）
-            if (target.isBackupEnabled()) {
-                t = System.currentTimeMillis();
-                stepStart(task, 2);
-                log.info("[发布] 备份旧版本 jar: {}", target.jarPath());
-                CommandResult backup = exec(session, config, backupScript(target));
-                stepDone(task, 2, backup.isSuccess(), backup.getOutput(), t);
-                log.info("[发布] 备份结果: {}", backup.getOutput());
-            }
+            // 2. 备份旧版本（始终执行：jar / conf 文件都会先备份一份）
+            t = System.currentTimeMillis();
+            stepStart(task, 2);
+            log.info("[发布] 备份旧版本 jar，备份位置: {}", target.effectiveBackupDir());
+            CommandResult backup = exec(session, config, backupScript(target));
+            stepDone(task, 2, backup.isSuccess(), backup.getOutput(), t);
+            log.info("[发布] 备份结果: {}", backup.getOutput());
 
             // 3. 上传新包（带进度；自定义部署可一次上传多个 jar，逐个传输后统一重启一次）
-            final int uploadIdx = target.isBackupEnabled() ? 3 : 2;
+            final int uploadIdx = 3;
             t = System.currentTimeMillis();
             stepStart(task, uploadIdx);
             log.info("[发布] 开始上传 {} → {}", sourceDesc, target.getRemoteDir());
@@ -556,19 +544,17 @@ public class DeployService {
             }
             stepDone(task, uploadIdx, true, sourceDesc + " → " + target.getRemoteDir() + "：" + uploadedDetail, t);
 
-            // 4. 清理历史备份（仅在本次有备份时执行，索引随备份步骤有无而变）
-            final int cleanIdx = target.isBackupEnabled() ? 4 : 3;
-            if (target.isBackupEnabled()) {
-                t = System.currentTimeMillis();
-                stepStart(task, cleanIdx);
-                CommandResult clean = exec(session, config, cleanBackupScript(target));
-                stepDone(task, cleanIdx, clean.isSuccess(), "保留最近 " + properties.getKeepBackupCount() + " 个版本", t);
-                log.info("[发布] 清理历史备份，保留最近 {} 个版本，结果: {}", properties.getKeepBackupCount(), clean.getOutput());
-            }
+            // 4. 清理历史备份（保留最近 keep-backup-count 个版本）
+            final int cleanIdx = 4;
+            t = System.currentTimeMillis();
+            stepStart(task, cleanIdx);
+            CommandResult clean = exec(session, config, cleanBackupScript(target));
+            stepDone(task, cleanIdx, clean.isSuccess(), "保留最近 " + properties.getKeepBackupCount() + " 个版本", t);
+            log.info("[发布] 清理历史备份，保留最近 {} 个版本，结果: {}", properties.getKeepBackupCount(), clean.getOutput());
 
             // 5/6. 重启
-            final int stopIdx = target.isBackupEnabled() ? 5 : 3;
-            final int startIdx = target.isBackupEnabled() ? 6 : 4;
+            final int stopIdx = 5;
+            final int startIdx = 6;
             if (restart) {
                 log.info("[发布] 开始停止并启动应用 target={}", target.getName());
                 doStopSteps(task, session, config, target, stopIdx);
@@ -614,10 +600,10 @@ public class DeployService {
     private void doFrontendDeploy(DeployTask task, ServerConfig config, DeployTarget target, File src) {
         SshSession session = null;
         File zipFile = null;
-        // 步骤序列：连接→目录→（备份）→（清空）→上传→发布后命令。
-        // 备份步骤由「发布前备份」开关决定、清空步骤由「清空后更新」开关决定，两者都会使后续步骤索引后移
+        // 步骤序列：连接→目录→备份→（清空）→上传→发布后命令。
+        // 备份步骤固定存在，清空步骤由「清空后更新」开关决定（会使后续步骤索引后移）
         int idx = 2;
-        final int backupIdx = target.isBackupEnabled() ? idx++ : -1;
+        final int backupIdx = idx++;
         final int cleanIdx = target.isClearBeforeDeploy() ? idx++ : -1;
         final int uploadIdx = idx++;
         final int postIdx = idx;
@@ -640,13 +626,11 @@ public class DeployService {
             }
             stepDone(task, 1, true, target.getRemoteDir(), t);
 
-            // 2. 备份旧版本（可选：勾选「发布前备份」才执行；前端把发布目录打包成 tar.gz 到备份目录）
-            if (target.isBackupEnabled()) {
-                t = System.currentTimeMillis();
-                stepStart(task, backupIdx);
-                CommandResult backup = exec(session, config, backupScript(target));
-                stepDone(task, backupIdx, backup.isSuccess(), backup.getOutput(), t);
-            }
+            // 2. 备份旧版本（始终执行；把发布目录打包成 tar.gz 到备份目录，未配置时用 发布目录/backup）
+            t = System.currentTimeMillis();
+            stepStart(task, backupIdx);
+            CommandResult backup = exec(session, config, backupScript(target));
+            stepDone(task, backupIdx, backup.isSuccess(), backup.getOutput(), t);
 
             // 2.5 清空目标目录（可选：勾选「清空后更新」时直接删除发布目录/文件夹名整个目录，再重建空目录）
             if (target.isClearBeforeDeploy()) {
@@ -1037,9 +1021,8 @@ public class DeployService {
             session = sshService.open(config);
             stepDone(task, 0, true, config.getUsername() + "@" + config.getHost() + ":" + config.effectivePort(), t);
 
-            String backupFile = target.effectiveBackupDir() + "/" + backupName;
             if ("frontend".equals(target.getType())) {
-                doFrontendRollback(task, session, config, target, backupFile, backupName);
+                doFrontendRollback(task, session, config, target, backupName);
             } else {
                 // 自定义部署可能包含多个 jar：按备份文件名前缀（<jar名>.<时间戳>）判断要回滚到哪个 jar
                 String restoreTo = target.jarPath();
@@ -1053,9 +1036,10 @@ public class DeployService {
                 }
                 t = System.currentTimeMillis();
                 stepStart(task, 1);
-                CommandResult cr = exec(session, config, "test -f " + ShellUtil.quote(backupFile)
-                        + " && cp -p " + ShellUtil.quote(backupFile) + " " + ShellUtil.quote(restoreTo)
-                        + " && echo ROLLBACK_OK");
+                // 备份可能在配置的备份目录，也可能在 jar 包目录（未配置 / 配置目录不可用时的回退位置）
+                CommandResult cr = exec(session, config, locateBackupCommand(target, backupName)
+                        + "if [ -z \"$BF\" ]; then echo '备份文件不存在: " + backupName + "'; exit 1; fi\n"
+                        + "cp -p \"$BF\" " + ShellUtil.quote(restoreTo) + " && echo ROLLBACK_OK\n");
                 boolean ok = cr.isSuccess() && cr.getOutput().contains("ROLLBACK_OK");
                 stepDone(task, 1, ok, ok ? backupName + " → " + restoreTo : cr.getOutput(), t);
                 log.info("[回滚] 回滚结果: {}", ok ? "成功" : cr.getOutput());
@@ -1077,13 +1061,15 @@ public class DeployService {
 
     /** 前端类型回滚：tar 解压备份覆盖前端文件夹（remoteDir/本机发布路径末级目录名，推导文件夹名为空时为 remoteDir），随后执行「发布后命令」 */
     private void doFrontendRollback(DeployTask task, SshSession session, ServerConfig config, DeployTarget target,
-                                    String backupFile, String backupName) {
+                                    String backupName) {
         long t = System.currentTimeMillis();
         stepStart(task, 1);
-        CommandResult cr = exec(session, config, "mkdir -p " + ShellUtil.quote(target.effectiveFrontendDir())
-                + " && test -f " + ShellUtil.quote(backupFile)
-                + " && tar xzf " + ShellUtil.quote(backupFile) + " -C " + ShellUtil.quote(target.effectiveFrontendDir())
-                + " && echo ROLLBACK_OK");
+        // 备份包可能在配置的备份目录，也可能在发布目录（配置目录不可用时的回退位置）
+        CommandResult cr = exec(session, config, "mkdir -p " + ShellUtil.quote(target.effectiveFrontendDir()) + "\n"
+                + locateBackupCommand(target, backupName)
+                + "if [ -z \"$BF\" ]; then echo '备份文件不存在: " + backupName + "'; exit 1; fi\n"
+                + "tar xzf \"$BF\" -C " + ShellUtil.quote(target.effectiveFrontendDir())
+                + " && echo ROLLBACK_OK\n");
         boolean ok = cr.isSuccess() && cr.getOutput().contains("ROLLBACK_OK");
         stepDone(task, 1, ok, ok ? backupName + " → " + target.effectiveFrontendDir() : cr.getOutput(), t);
         log.info("[回滚] 前端目录回滚结果: {}", ok ? "成功" : cr.getOutput());
@@ -1416,7 +1402,8 @@ public class DeployService {
     public List<Map<String, String>> listBackups(String targetId) {
         ServerConfig config = resolveConfig(targetId);
         DeployTarget target = resolveTarget(targetId);
-        List<Map<String, String>> list = new ArrayList<Map<String, String>>();
+        // 备份可能在「配置的备份目录」和「jar 包目录 / 发布目录」两处，按文件名去重（先出现的位置优先）
+        Map<String, Map<String, String>> dedup = new LinkedHashMap<String, Map<String, String>>();
         SshSession session = null;
         try {
             session = sshService.open(config);
@@ -1428,13 +1415,16 @@ public class DeployService {
                     continue;
                 }
                 String[] parts = s.split("\\|", -1);
+                if (dedup.containsKey(parts[0])) {
+                    continue;
+                }
                 Map<String, String> item = new LinkedHashMap<String, String>();
                 item.put("name", parts[0]);
                 item.put("size", parts.length > 1 ? parts[1] : "");
                 item.put("time", parts.length > 2 ? parts[2] : "");
-                list.add(item);
+                dedup.put(parts[0], item);
             }
-            return list;
+            return new ArrayList<Map<String, String>>(dedup.values());
         } finally {
             closeQuietly(session);
         }
@@ -1743,51 +1733,121 @@ public class DeployService {
         return sb.toString();
     }
 
+    /**
+     * 发布前备份（后端）：旧 jar 与 conf 目录下的配置文件各留一份带时间戳的副本。
+     * <ul>
+     *   <li>未配置备份目录：jar 备份在 jar 包目录本身、conf 备份在 conf 目录本身（就地备份同名文件）；</li>
+     *   <li>配置了备份目录：两者都备份到该目录；</li>
+     *   <li>配置了但目录不存在 / 不可写：自动回退到 jar 包目录（上传目录）备份，不因此中断发布。</li>
+     * </ul>
+     * 备份文件名为 {@code <原文件名>.<yyyyMMddHHmmss>}，回滚时按 jar 名前缀匹配。
+     */
     private String backupScript(DeployTarget t) {
         if ("frontend".equals(t.getType())) {
             return frontendBackupScript(t);
         }
-        // 自定义部署可能包含多个 jar：逐个备份为 <jar名>.<时间戳>
+        String remoteDir = trimSlash(t.getRemoteDir());
+        String confDir = trimSlash(t.effectiveConfDir());
+        boolean configured = t.hasConfiguredBackupDir();
+
         StringBuilder sb = new StringBuilder();
         sb.append("TS=$(date +%Y%m%d%H%M%S)\n");
-        sb.append("mkdir -p ").append(ShellUtil.quote(t.effectiveBackupDir())).append("\n");
+        // 备份根目录：配置了就用配置值，否则就是 jar 包目录本身
+        sb.append("BD=").append(ShellUtil.quote(configured ? trimSlash(t.getBackupDir()) : remoteDir)).append("\n");
+        if (configured) {
+            // 指定目录不存在 / 不可写 → 回退到 jar 包目录（上传目录），backup 步骤不因此失败
+            sb.append("if ! mkdir -p \"$BD\" 2>/dev/null || [ ! -w \"$BD\" ]; then\n");
+            sb.append("  echo \"备份目录不可用：$BD，改为在 jar 包目录备份\"\n");
+            sb.append("  BD=").append(ShellUtil.quote(remoteDir)).append("\n");
+            sb.append("  mkdir -p \"$BD\" 2>/dev/null\n");
+            sb.append("fi\n");
+        } else {
+            sb.append("mkdir -p \"$BD\" 2>/dev/null\n");
+        }
+        // 配置了备份目录 → conf 也集中放这里（含回退后的 jar 包目录）；未配置 → conf 就地在 conf 目录备份
+        if (configured) {
+            sb.append("CBD=\"$BD\"\n");
+        } else {
+            sb.append("CBD=").append(ShellUtil.quote(confDir)).append("\n");
+        }
+
+        // 1) 备份旧 jar（自定义部署可能有多个）
         sb.append("CNT=0\n");
         for (String n : jarNamesOf(t)) {
             if (ShellUtil.isBlank(n)) {
                 continue;
             }
             sb.append("if [ -f ").append(ShellUtil.quote(t.jarPath(n))).append(" ]; then\n");
-            sb.append("  cp -p ").append(ShellUtil.quote(t.jarPath(n))).append(' ')
-                    .append(ShellUtil.quote(t.effectiveBackupDir() + "/" + n + "."))
-                    .append("\"$TS\"").append(" && echo \"已备份为 ").append(n).append(".$TS\" && CNT=$((CNT+1))\n");
+            sb.append("  cp -p ").append(ShellUtil.quote(t.jarPath(n)))
+                    .append(" \"$BD/").append(dq(n)).append(".$TS\"")
+                    .append(" && echo \"已备份为 ").append(n).append(".$TS\" && CNT=$((CNT+1))\n");
             sb.append("fi\n");
         }
-        sb.append("if [ $CNT -eq 0 ]; then echo '远程暂无旧版本，跳过备份'; fi\n");
+        sb.append("if [ $CNT -eq 0 ]; then echo '远程暂无旧版本 jar，跳过 jar 备份'; fi\n");
+
+        // 2) 备份 conf 目录里的配置文件（跳过 jar 与已带时间戳的历史备份，避免备份套备份）
+        sb.append("CCNT=0\n");
+        sb.append("CONF=").append(ShellUtil.quote(confDir)).append("\n");
+        sb.append("if [ -d \"$CONF\" ]; then\n");
+        sb.append("  for f in \"$CONF\"/*; do\n");
+        sb.append("    [ -f \"$f\" ] || continue\n");
+        sb.append("    case \"$f\" in *.jar) continue;; esac\n");
+        sb.append("    b=$(basename \"$f\")\n");
+        sb.append("    case \"$b\" in *.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) continue;; esac\n");
+        sb.append("    cp -p \"$f\" \"$CBD/$b.$TS\" 2>/dev/null && { echo \"已备份配置文件 $b.$TS\"; CCNT=$((CCNT+1)); }\n");
+        sb.append("  done\n");
+        sb.append("fi\n");
+        sb.append("if [ $CCNT -eq 0 ]; then echo 'conf 目录暂无可备份的配置文件'; fi\n");
+        sb.append("echo \"备份存放目录: $BD\"\n");
         return sb.toString();
     }
 
-    /** 前端类型备份：只把发布目录里的内容（不含外层目录层级）打包成 tar.gz，放到备份目录。
-     *  注意用「-C 发布目录 .」打包内容本身，与回滚时的「tar xzf -C 发布目录」解压保持一致，
-     *  避免包内多一层目录导致回滚时套娃。备份目录在发布目录内时按相对路径排除。 */
+    /** 双引号内的 shell 转义：转义文件名里的 $ ` " \，避免拼接进 \"$BD/<名字>.$TS\" 时被展开 */
+    private static String dq(String s) {
+        if (s == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '"' || c == '\\' || c == '$' || c == '`') {
+                sb.append('\\');
+            }
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 前端类型备份：只把发布目录里的内容（不含外层目录层级）打包成 tar.gz。
+     * 备份目录未配置时用 {@code 发布目录/backup}（避免备份包落在站点根目录被外部下载）；
+     * 配置了但目录不可用时回退到发布目录根目录。
+     * 用「-C 发布目录 .」打包内容本身，与回滚时的「tar xzf -C 发布目录」解压保持一致。
+     */
     private String frontendBackupScript(DeployTarget t) {
         String dir = trimSlash(t.effectiveFrontendDir());
         String base = lastSegment(dir);
-        String backupDir = trimSlash(t.effectiveBackupDir());
+        String remoteRoot = trimSlash(t.getRemoteDir());
+        String defaultDir = trimSlash(t.effectiveBackupDir());
         // 备份目录位于发布目录内时，按相对 -C 目录（发布目录本身）的路径排除，tar 的 --exclude 需要相对路径才匹配
         String excludeRel = null;
-        if (backupDir.equals(dir)) {
+        if (defaultDir.equals(dir)) {
             // 备份文件直接写在发布目录内，排除所有历史备份包，避免把自己打进包
             excludeRel = "*.tar.gz";
-        } else if (backupDir.startsWith(dir + "/")) {
-            excludeRel = backupDir.substring(dir.length() + 1);
+        } else if (defaultDir.startsWith(dir + "/")) {
+            excludeRel = defaultDir.substring(dir.length() + 1);
         }
         StringBuilder sb = new StringBuilder();
         sb.append("if [ -d ").append(ShellUtil.quote(dir))
-                .append(" ] && [ \"$(ls -A ").append(ShellUtil.quote(dir)).append(" 2>/dev/null)\" ]; then\n");
+                .append(" ] && [ -n \"$(ls -A ").append(ShellUtil.quote(dir)).append(" 2>/dev/null)\" ]; then\n");
         sb.append("  TS=$(date +%Y%m%d%H%M%S)\n");
-        sb.append("  mkdir -p ").append(ShellUtil.quote(backupDir)).append("\n");
-        sb.append("  tar czf ").append(ShellUtil.quote(backupDir)).append('/').append(base).append(".$TS.tar.gz")
-                .append(" -C ").append(ShellUtil.quote(dir));
+        sb.append("  BD=").append(ShellUtil.quote(defaultDir)).append("\n");
+        sb.append("  if ! mkdir -p \"$BD\" 2>/dev/null || [ ! -w \"$BD\" ]; then\n");
+        sb.append("    echo \"备份目录不可用：$BD，改为在发布目录根目录备份\"\n");
+        sb.append("    BD=").append(ShellUtil.quote(remoteRoot)).append("\n");
+        sb.append("    mkdir -p \"$BD\" 2>/dev/null\n");
+        sb.append("  fi\n");
+        sb.append("  tar czf \"$BD/").append(dq(base)).append(".$TS.tar.gz\" -C ").append(ShellUtil.quote(dir));
         if (excludeRel != null) {
             sb.append(" --exclude=").append(ShellUtil.quote(excludeRel));
         }
@@ -1796,6 +1856,57 @@ public class DeployService {
         sb.append("else\n");
         sb.append("  echo '远程发布目录为空或不存在，跳过备份'\n");
         sb.append("fi\n");
+        return sb.toString();
+    }
+
+    /**
+     * 备份可能落在「配置的备份目录」或「jar 包目录 / 发布目录」两处（后者是配置目录不可用时的回退位置），
+     * 这里按顺序返回去重后的候选目录，供列出 / 清理 / 回滚查找使用。
+     */
+    private static List<String> backupCandidateDirs(DeployTarget t) {
+        List<String> dirs = new ArrayList<String>();
+        if (t.hasConfiguredBackupDir()) {
+            String c = trimSlash(t.getBackupDir());
+            if (!c.isEmpty()) {
+                dirs.add(c);
+            }
+        }
+        String def = trimSlash(t.effectiveBackupDir());
+        if (!def.isEmpty() && !dirs.contains(def)) {
+            dirs.add(def);
+        }
+        String root = trimSlash(t.getRemoteDir());
+        // 备份脚本在「备份目录不可用」时会回退到发布目录（jar 包目录），所以这里始终把它当作候选位置
+        if (!root.isEmpty() && !dirs.contains(root)) {
+            dirs.add(root);
+        }
+        // 兼容历史默认位置 发布目录/backup，保证老备份仍能在回滚列表里看到、也能被清理
+        String legacy = root.isEmpty() ? "" : root + "/backup";
+        if (!legacy.isEmpty() && !dirs.contains(legacy)) {
+            dirs.add(legacy);
+        }
+        return dirs;
+    }
+
+    private static String backupDirListShell(DeployTarget t) {
+        StringBuilder sb = new StringBuilder();
+        for (String d : backupCandidateDirs(t)) {
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            sb.append(ShellUtil.quote(d));
+        }
+        return sb.toString();
+    }
+
+    /** 生成「在候选备份目录里找某个备份文件」的脚本片段，找到后把路径写进 $BF */
+    private String locateBackupCommand(DeployTarget t, String backupName) {
+        StringBuilder sb = new StringBuilder("BF=''\n");
+        for (String d : backupCandidateDirs(t)) {
+            String p = trimSlash(d) + "/" + backupName;
+            sb.append("if [ -z \"$BF\" ] && [ -f ").append(ShellUtil.quote(p)).append(" ]; then BF=")
+                    .append(ShellUtil.quote(p)).append("; fi\n");
+        }
         return sb.toString();
     }
 
@@ -1831,45 +1942,46 @@ public class DeployService {
         return sb.toString();
     }
 
+    /** 清理历史备份：配置的备份目录与回退位置（jar 包目录 / 发布目录）都清理，各自保留最近 N 个 */
     private String cleanBackupScript(DeployTarget t) {
         int keep = Math.max(1, properties.getKeepBackupCount());
-        if ("frontend".equals(t.getType())) {
-            StringBuilder fb = new StringBuilder();
-            fb.append("cd ").append(ShellUtil.quote(t.effectiveBackupDir())).append(" 2>/dev/null || exit 0\n");
-            fb.append("ls -1t *.tar.gz 2>/dev/null | tail -n +").append(keep + 1)
-                    .append(" | while read f; do rm -f \"$f\"; echo \"已清理 $f\"; done\n");
-            return fb.toString();
-        }
         StringBuilder sb = new StringBuilder();
-        sb.append("cd ").append(ShellUtil.quote(t.effectiveBackupDir())).append(" 2>/dev/null || exit 0\n");
-        // 备份文件名为 <jar名>.<时间戳>，多 jar 时用扩展正则匹配任一 jar 名的前缀
-        sb.append("ls -1t | grep -E ").append(ShellUtil.quote(backupPrefixRegex(t)))
-                .append(" | tail -n +").append(keep + 1)
-                .append(" | while read f; do rm -f \"$f\"; echo \"已清理 $f\"; done\n");
-        return sb.toString();
-    }
-
-    private String listBackupScript(DeployTarget t) {
+        sb.append("KEEP=").append(keep).append("\n");
+        sb.append("for d in ").append(backupDirListShell(t)).append("; do\n");
+        sb.append("  [ -d \"$d\" ] || continue\n");
         if ("frontend".equals(t.getType())) {
-            StringBuilder fb = new StringBuilder();
-            fb.append("cd ").append(ShellUtil.quote(t.effectiveBackupDir())).append(" 2>/dev/null || exit 0\n");
-            fb.append("ls -1t *.tar.gz 2>/dev/null | head -30 | while read f; do\n");
-            fb.append("  echo \"$f|$(du -h \"$f\" 2>/dev/null | awk '{print $1}')|");
-            fb.append("$(date -r \"$f\" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)\"\n");
-            fb.append("done\n");
-            return fb.toString();
+            sb.append("  ( cd \"$d\" && ls -1t | grep -E ").append(ShellUtil.quote(frontendBackupRegex(t)))
+                    .append(" | tail -n +$((KEEP+1))");
+            sb.append(" | while read f; do rm -f \"$f\"; echo \"已清理 $d/$f\"; done )\n");
+        } else {
+            // 备份文件名为 <jar名>.<时间戳>，多 jar 时用扩展正则匹配任一 jar 名的前缀
+            sb.append("  ( cd \"$d\" && ls -1t | grep -E ").append(ShellUtil.quote(backupPrefixRegex(t)))
+                    .append(" | tail -n +$((KEEP+1))");
+            sb.append(" | while read f; do rm -f \"$f\"; echo \"已清理 $d/$f\"; done )\n");
         }
-        StringBuilder sb = new StringBuilder();
-        sb.append("cd ").append(ShellUtil.quote(t.effectiveBackupDir())).append(" 2>/dev/null || exit 0\n");
-        sb.append("ls -1t | grep -E ").append(ShellUtil.quote(backupPrefixRegex(t)))
-                .append(" | head -30 | while read f; do\n");
-        sb.append("  echo \"$f|$(du -h \"$f\" 2>/dev/null | awk '{print $1}')|");
-        sb.append("$(date -r \"$f\" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)\"\n");
         sb.append("done\n");
         return sb.toString();
     }
 
-    /** 备份文件名的匹配正则（形如 ^(a\.jar\.|b\.jar\.)），用于多 jar 场景下列出 / 清理历史备份 */
+    private String listBackupScript(DeployTarget t) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("for d in ").append(backupDirListShell(t)).append("; do\n");
+        sb.append("  [ -d \"$d\" ] || continue\n");
+        if ("frontend".equals(t.getType())) {
+            sb.append("  ( cd \"$d\" && ls -1t | grep -E ").append(ShellUtil.quote(frontendBackupRegex(t)))
+                    .append(" | head -30 | while read f; do\n");
+        } else {
+            sb.append("  ( cd \"$d\" && ls -1t | grep -E ").append(ShellUtil.quote(backupPrefixRegex(t)))
+                    .append(" | head -30 | while read f; do\n");
+        }
+        sb.append("    echo \"$f|$(du -h \"$f\" 2>/dev/null | awk '{print $1}')|");
+        sb.append("$(date -r \"$f\" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)\"\n");
+        sb.append("  done )\n");
+        sb.append("done\n");
+        return sb.toString();
+    }
+
+    /** 备份文件名的匹配正则（形如 ^(a\.jar\.[0-9]{14})$），用于多 jar 场景下列出 / 清理历史备份 */
     private static String backupPrefixRegex(DeployTarget t) {
         StringBuilder sb = new StringBuilder("^(");
         for (String n : jarNamesOf(t)) {
@@ -1879,12 +1991,18 @@ public class DeployService {
             if (sb.length() > 2) {
                 sb.append('|');
             }
-            sb.append(regexEscape(n)).append("\\.");
+            sb.append(regexEscape(n)).append("\\.[0-9]{14}");
         }
         if (sb.length() == 2) {
             return "^deploy-target-no-jar";
         }
         return sb.append(')').toString();
+    }
+
+    /** 前端备份包名（形如 ^web\.[0-9]{14}\.tar\.gz$），避免把发布根目录里无关的 tar.gz 当成备份清理掉 */
+    private static String frontendBackupRegex(DeployTarget t) {
+        String base = lastSegment(trimSlash(t.effectiveFrontendDir()));
+        return "^(" + regexEscape(base) + "\\.[0-9]{14}\\.tar\\.gz)$";
     }
 
     /**

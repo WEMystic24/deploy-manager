@@ -620,7 +620,7 @@
       if (isFe) {
         // 前端类型：支持选择本地文件（zip / 单文件）上传发布，也支持手动备份 / 查看历史版本并回滚（无 jar 进程启停）
         btns += '<button data-act="upload" title="选择本地文件（zip / 单文件）上传并发布到该配置">上传发布</button>'
-          + '<button data-act="backup" title="把当前发布目录打包备份到备份目录">备份</button>'
+          + '<button data-act="backup" title="把当前发布目录打包备份（配置了备份目录就存到那里，否则存到 发布目录/backup）">备份</button>'
           + '<button data-act="rollback" title="查看历史版本并回滚">回滚</button>';
       } else {
         // 后端 jar 应用才有启停 / 回滚（jar 进程管理）
@@ -1122,7 +1122,8 @@
     var errorLog = fv('t-errorLogFile').trim()
       || (remoteDir ? remoteDir + '/logs/' + (base || 'app') + '-error.log' : '<error日志文件>');
     var pidFile = remoteDir ? remoteDir + '/' + (base || 'app') + '.pid' : '<pid文件>';
-    var backupDir = fv('t-backupDir').trim() || (remoteDir ? remoteDir + '/backup' : '<备份目录>');
+    // 未配置备份目录时，后端备份就在 jar 包目录本身（与后端 DeployTarget.effectiveBackupDir 一致）
+    var backupDir = fv('t-backupDir').trim() || (remoteDir ? remoteDir : '<备份目录>');
     var confDir = trimEndSlash(fv('t-confDir')) || (remoteDir ? remoteDir + '/conf' : '<conf目录>');
     return cmd
       .replace(/\{remoteDir\}/g, remoteDir || '<发布目录>')
@@ -1286,12 +1287,7 @@
       dm0.checked = !cleanMode;
       dm1.checked = cleanMode;
     }
-    // 「发布前备份」勾选框：后端 / 前端各一个，共用 backupEnabled 字段，默认不勾选
-    var be = $('t-backupEnabled');
-    var beFe = $('t-backupEnabledFe');
-    var backupOn = !!(target && target.backupEnabled);
-    if (be) { be.checked = backupOn; }
-    if (beFe) { beFe.checked = backupOn; }
+    // 发布前备份已改为始终执行（无需勾选），这里不再有 backupEnabled 勾选框
     // 发布目录变化也同步默认解压命令中的目录
     var rd = $('t-remoteDir');
     if (rd) {
@@ -1361,10 +1357,7 @@
     if (dm) {
       body.clearBeforeDeploy = dm.value === 'clean';
     }
-    // 「发布前备份」：后端 / 前端两个勾选框任一勾选即视为开启（默认不勾选）
-    var be = $('t-backupEnabled');
-    var beFe = $('t-backupEnabledFe');
-    body.backupEnabled = !!(be && be.checked) || !!(beFe && beFe.checked);
+    // 发布前备份始终执行，不再有 backupEnabled 开关
     // 本机路径发布后的重启开关（复选框）
     var rl = $('t-restartLocal');
     if (rl) {

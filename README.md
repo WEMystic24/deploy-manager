@@ -32,7 +32,7 @@ open http://localhost:8099
 | 失败明确提示 | **任何一步报错都会在页面顶部弹出红色错误横幅 + 红色 toast，并定位到失败的那一步（✗）及其原因**；结果区对“未执行”的后续步骤标灰，不再卡在“执行中/上传中”转圈 |
 | 发布 jar 到指定目录 | 支持浏览器上传，或直接填写本机 jar 路径（例如 `target/app.jar`）推送 |
 | 配置时直接选远程路径 | 发布配置里「jar 包目录 / conf 目录 / info 日志文件 / error 日志文件 / 备份目录」都能点「浏览」在弹窗内浏览服务器目录，点一下即填入（也能复制路径）；日志目录还没创建时自动回退到上级目录 |
-| 自动备份 | 发布前把远程旧包 `cp` 到备份目录并加时间戳，默认保留最近 10 个版本 |
+| 自动备份 | **发布前始终备份，无需开关**：旧 jar 与 conf 文件各留一份带时间戳的副本；未配置备份目录时后端就地备份（jar 在 jar 包目录、conf 在 conf 目录），配置了就集中存到该目录，目录不可用时自动回退；默认保留最近 10 个版本 |
 | 原子替换 | 先传 `xxx.jar.uploading`，传完再改名覆盖，避免中断留下坏包 |
 | 一键重启 | 先优雅 `kill`，超时未退再 `kill -9`，然后 `nohup java -jar` 重新拉起 |
 | 状态查询 | PID、启动时间、运行时长、占用内存、远程 jar 大小与修改时间 |
@@ -63,7 +63,7 @@ open http://localhost:8099
 | 启动参数 | 否 | 如 `--spring.profiles.active=test --server.port=8080` |
 | info 日志文件 | 否 | 默认 `发布目录/logs/jar名.log`，默认启动命令的输出重定向到这里 |
 | error 日志文件 | 否 | 默认 `发布目录/logs/jar名-error.log`，运行日志页「error」页签读取 |
-| 备份目录 | 否 | 默认 `发布目录/backup` |
+| 备份目录 | 否 | 留空：后端在 jar 包目录、conf 目录就地备份（同名 + 时间戳）；前端存 `发布目录/backup`。填写则统一存到该目录；目录不可用时自动回退到发布目录 / jar 包目录 |
 | 启动前 / 后命令 | 否 | 需要额外 `source` 环境变量或做通知时使用 |
 
 ### 3.1 登录后切换用户（su 提权）
@@ -127,14 +127,18 @@ java -jar target/deploy-manager.jar --server.port=9000 --deploy.auth.enabled=tru
 ```text
 连接服务器 (ssh，普通登录账号)
   → [若开启 su] 所有后续步骤均以 su 切换到目标用户（如 root）后执行
-  → mkdir -p 发布目录 / 备份目录 / 日志目录
-  → 若远程已有旧包：cp -p app.jar backup/app.jar.20260818120000
+  → mkdir -p 发布目录 / 日志目录
+  → 备份旧版本（始终执行）：cp -p app.jar app.jar.20260818120000；conf 目录里的配置文件同样各备份一份
+      · 未配置备份目录 → jar 备份在 jar 包目录、conf 备份在 conf 目录
+      · 配置了备份目录 → 都存到该目录；该目录不存在/不可写 → 自动回退到发布目录，发布不中断
   → SFTP 上传（su 场景先传到 /tmp 中转再 su 移动）到 app.jar.uploading，成功后 rename 覆盖 app.jar
   → 清理超过 keep-backup-count 的历史备份
   → （勾选重启时）ps 定位 "-jar /发布目录/app.jar" 的进程 → kill → 等待 → 必要时 kill -9
   → cd 发布目录 && nohup java $JVM_OPTS -jar app.jar $APP_ARGS >> 日志 2>&1 &
   → sleep 后再次确认进程存活，失败则回显日志尾部
 ```
+
+> 回滚只针对 jar / 前端 tar.gz 备份；conf 的备份文件用于人工恢复（同名 + 时间戳，直接 `cp` 回去即可）。
 
 进程定位用的是完整 jar 路径（`-jar /opt/app/order/order-service.jar`），因此同一台机器上跑多个 Java 应用不会误杀。
 远程命令统一用 `bash -l -c` 执行，会加载 `/etc/profile`，可避免常见的 `java: command not found`。

@@ -898,6 +898,11 @@ table.list th {
   margin: 0;
 }
 
+/* tgroup 内的整行字段（JVM 参数、启动参数、自定义启动命令等）与网格/彼此之间留出纵向间距 */
+.tgroup > .field.full {
+  margin-top: 12px;
+}
+
 /* 类型选择：卡片式单选，选中高亮 */
 .t-type-row {
   margin-bottom: 0;
