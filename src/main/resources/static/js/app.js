@@ -1045,6 +1045,9 @@
   /** 弹窗内「自定义部署」的 jar 包列表（多个 jar 统一上传更新） */
   var jarChips = [];
 
+  /** 弹窗内选中的「主 jar 包」（状态查询用；空字符串 = 自动，任一 jar 运行即算运行） */
+  var primaryJarValue = '';
+
   /** 当前弹窗选中的后端部署方式：default / custom */
   function currentDeployMode() {
     var rs = document.getElementsByName('t-deployMode');
@@ -1066,6 +1069,7 @@
     box.innerHTML = '';
     if (!jarChips.length) {
       box.innerHTML = '<span class="jar-chip-empty">尚未上传 jar 包，选择上方文件并保存后会自动识别</span>';
+      renderPrimaryJarOptions();
       return;
     }
     jarChips.forEach(function (n, idx) {
@@ -1087,6 +1091,36 @@
       chip.appendChild(del);
       box.appendChild(chip);
     });
+    renderPrimaryJarOptions();
+  }
+
+  /**
+   * 渲染「主 jar 包（状态查询用）」下拉：选项来自已上传的 jar 列表，
+   * 首项为空值表示「自动」——任一 jar 运行即算运行、PID 取第一个。
+   * 已保存的主 jar 若已不在列表里（被移除），仍保留一个带标记的选项，避免静默丢失配置。
+   */
+  function renderPrimaryJarOptions() {
+    var sel = $('t-primaryJar');
+    if (!sel) {
+      return;
+    }
+    var keep = primaryJarValue || sel.value || '';
+    var html = '<option value="">自动（任一 jar 运行即算运行）</option>';
+    jarChips.forEach(function (n) {
+      html += '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>';
+    });
+    if (keep && jarChips.indexOf(keep) < 0) {
+      html += '<option value="' + escapeHtml(keep) + '">' + escapeHtml(keep) + '（已不在列表中）</option>';
+    }
+    sel.innerHTML = html;
+    sel.value = keep;
+    if (sel.value !== keep) {
+      sel.value = ''; // 值已不存在时回落到「自动」
+    }
+    primaryJarValue = sel.value;
+    sel.onchange = function () {
+      primaryJarValue = this.value;
+    };
   }
 
   /** 追加 jar 名称（支持逗号/空格分隔批量输入；去重、只保留 .jar、去掉路径前缀） */
@@ -1375,6 +1409,8 @@
       }
     }
     jarChips = [];
+    // 主 jar 包（状态查询用）：先记下已保存值，jar 列表渲染时会据此选中下拉项
+    primaryJarValue = target && target.primaryJar ? String(target.primaryJar) : '';
     addJarChips(initJars);
     // 自定义启动命令变化时刷新预览
     var scEl = $('t-startCommand');
@@ -1503,17 +1539,21 @@
       body.startCommand = fv('t-startCommand').trim();
       // 主 jar 名称与列表首项保持一致，供默认日志名 / {jarName} 占位符使用；列表清空则一并清空
       body.jarName = jarChips.length ? jarChips[0] : '';
+      // 主 jar 包（状态查询用）：空 = 自动（任一 jar 运行即算运行）
+      body.primaryJar = fv('t-primaryJar').trim();
       // 自定义部署不含「本机路径发布」
       delete body.localPath;
       delete body.restartLocal;
     } else if (body.type !== 'frontend') {
       body.jarNames = [];
+      // 默认部署只有单个 jar，不需要单独指定主 jar
+      body.primaryJar = '';
       // 默认部署同样支持自定义启动命令（留空则用自动生成的默认命令）
       body.startCommand = fv('t-startCommand').trim();
     }
     // 前端发布静态资源：不设置任何后端（jar）相关字段
     if (body.type === 'frontend') {
-      ['jarName', 'javaCmd', 'jvmOpts', 'appArgs', 'infoLogFile', 'errorLogFile', 'backupDir', 'preStartCmd', 'postStartCmd', 'localPath', 'restartLocal', 'startCommand', 'jarNames']
+      ['jarName', 'javaCmd', 'jvmOpts', 'appArgs', 'infoLogFile', 'errorLogFile', 'backupDir', 'preStartCmd', 'postStartCmd', 'localPath', 'restartLocal', 'startCommand', 'jarNames', 'primaryJar']
         .forEach(function (f) { delete body[f]; });
     }
     if (!body.serverId) {
@@ -1645,12 +1685,23 @@
     return s;
   }
 
+  /** 进程 PID 展示：多 jar 时在 PID 后注明共几个进程（PID 为配置的主 jar 对应的进程） */
+  function pidCell(st) {
+    var main = escapeHtml(st.pid || '-');
+    var arr = st.pids ? String(st.pids).trim().split(/\s+/) : [];
+    var n = arr.filter(function (x) { return !!x; }).length;
+    if (n > 1) {
+      return main + ' <span class="pid-count">共 ' + n + ' 个进程</span>';
+    }
+    return main;
+  }
+
   function renderStatus(st) {
     var tag = !st.connected ? '<span class="tag err">连接失败</span>'
       : (st.running ? '<span class="tag run">运行中</span>' : '<span class="tag stop">未运行</span>');
     var cards = [
       ['运行状态', tag],
-      ['进程 PID', escapeHtml(st.pid || '-')],
+      ['进程 PID', pidCell(st)],
       ['启动时间', escapeHtml(fmtDateTime(st.startTime))],
       ['运行时长', escapeHtml(st.uptime || '-')],
       ['占用内存', escapeHtml(st.memory || '-')],

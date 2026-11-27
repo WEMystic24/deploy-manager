@@ -131,7 +131,12 @@
   function stateOf(st, type) {
     if (type === 'frontend') return { cls: '', text: '前端静态资源', run: null };
     if (!st || st.connected === false) return { cls: 'err', text: '连接失败' + (st && st.message ? '：' + st.message : ''), run: false };
-    if (st.running) return { cls: 'run', text: '运行中' + (st.pid ? ' · PID ' + st.pid : '') + (st.uptime ? ' · ' + st.uptime : ''), run: true };
+    if (st.running) {
+      // PID 为配置的主 jar 对应的进程；多 jar 时补充「共 N 个进程」
+      var pids = st.pids ? String(st.pids).trim().split(/\s+/).filter(function (x) { return !!x; }) : [];
+      var extra = pids.length > 1 ? ' · 共 ' + pids.length + ' 个进程' : '';
+      return { cls: 'run', text: '运行中' + (st.pid ? ' · PID ' + st.pid : '') + extra + (st.uptime ? ' · ' + st.uptime : ''), run: true };
+    }
     return { cls: 'stop', text: '未运行', run: false };
   }
 

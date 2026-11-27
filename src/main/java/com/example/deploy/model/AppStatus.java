@@ -15,6 +15,8 @@ public class AppStatus {
     /** 进程是否存活 */
     private boolean running;
     private String pid;
+    /** 命中的全部进程 PID（空格分隔）：多 jar 时可能不止一个，pid 是其中的主进程 */
+    private String pids;
     /** 进程启动时间 */
     private String startTime;
     /** 已运行时长 */
@@ -84,6 +86,14 @@ public class AppStatus {
 
     public void setPid(String pid) {
         this.pid = pid;
+    }
+
+    public String getPids() {
+        return pids;
+    }
+
+    public void setPids(String pids) {
+        this.pids = pids;
     }
 
     public String getStartTime() {

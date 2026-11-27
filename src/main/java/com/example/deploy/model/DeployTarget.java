@@ -35,6 +35,13 @@ public class DeployTarget {
     /** 远程 jar 文件名，如 order-service.jar */
     private String jarName;
 
+    /**
+     * 主 jar 包名称（可选）：一个发布目录里有多个 jar（自定义部署）时，
+     * 状态查询 / 看板 PID / 启动后存活复核只认这个 jar，避免把同目录另一个 jar 的进程当成主服务。
+     * 留空则「任一 jar 命中即算运行中」，PID 取定位到的第一个。
+     */
+    private String primaryJar;
+
     /** java 命令，默认 java，也可写绝对路径 /usr/local/jdk1.8/bin/java */
     private String javaCmd = "java";
 
@@ -182,6 +189,27 @@ public class DeployTarget {
     /** 发布目录下指定 jar 的远程完整路径 */
     public String jarPath(String name) {
         return trimSlash(remoteDir) + "/" + (name == null ? "" : name.trim());
+    }
+
+    /**
+     * 状态查询 / 启动复核使用的 jar 名称列表：配了「主 jar 包」就只认它（传完整路径时只取末级文件名），
+     * 否则退化为全部 jar（任一命中即算运行中）。
+     * <p>停止 / 备份 / 回滚始终按全部 jar 处理，见 {@link #effectiveJarNames()}。
+     */
+    public List<String> monitorJarNames() {
+        if (isNotBlank(primaryJar)) {
+            String p = primaryJar.trim();
+            int slash = p.lastIndexOf('/');
+            if (slash >= 0) {
+                p = p.substring(slash + 1).trim();
+            }
+            if (!p.isEmpty()) {
+                List<String> one = new ArrayList<String>();
+                one.add(p);
+                return one;
+            }
+        }
+        return effectiveJarNames();
     }
 
     /**
@@ -352,6 +380,7 @@ public class DeployTarget {
         t.remoteDir = this.remoteDir;
         t.confDir = this.confDir;
         t.jarName = this.jarName;
+        t.primaryJar = this.primaryJar;
         t.javaCmd = this.javaCmd;
         t.jvmOpts = this.jvmOpts;
         t.appArgs = this.appArgs;
@@ -456,6 +485,14 @@ public class DeployTarget {
 
     public void setJarName(String jarName) {
         this.jarName = jarName;
+    }
+
+    public String getPrimaryJar() {
+        return primaryJar;
+    }
+
+    public void setPrimaryJar(String primaryJar) {
+        this.primaryJar = primaryJar;
     }
 
     public String getJavaCmd() {

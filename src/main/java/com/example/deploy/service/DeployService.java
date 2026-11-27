@@ -1265,6 +1265,7 @@ public class DeployService {
             String pid = kv.get("PID");
             status.setRunning(ShellUtil.isNotBlank(pid));
             status.setPid(pid);
+            status.setPids(kv.get("PIDS"));
             status.setStartTime(kv.get("START"));
             status.setUptime(kv.get("UPTIME"));
             String rss = kv.get("RSS");
@@ -1703,11 +1704,23 @@ public class DeployService {
 
     private String statusScript(DeployTarget t) {
         StringBuilder sb = new StringBuilder();
-        // 先按发布目录精确定位真实进程（最准确）；定位不到再回退启动时写入的 pid 文件
-        sb.append("PID=$(").append(pidCommand(t)).append(")\n");
+        // 先按发布目录精确定位真实进程（最准确）；定位不到再回退启动时写入的 pid 文件。
+        // 多 jar 时只看「主 jar 包」（未配置则任一 jar 命中即算运行），避免把同目录另一个 jar 的进程当主服务。
+        List<String> mon = t.monitorJarNames();
+        boolean needAll = mon.size() < jarNamesOf(t).size();
+        sb.append("MPIDS=$(").append(pidListCommand(t, mon)).append(")\n");
+        sb.append("PID=$(echo $MPIDS | awk '{print $1}')\n");
+        if (needAll) {
+            // 额外统计全部 jar 的进程，供页面显示「共 N 个进程」
+            sb.append("APIDS=$(").append(pidListCommand(t)).append(")\n");
+        } else {
+            sb.append("APIDS=\"$MPIDS\"\n");
+        }
         sb.append("PF=").append(ShellUtil.quote(t.effectivePidFile())).append("\n");
         sb.append("if [ -z \"$PID\" ] && [ -f \"$PF\" ]; then P=$(cat \"$PF\" 2>/dev/null | tr -d ' \\t\\r\\n' | head -1); ");
         sb.append("if [ -n \"$P\" ] && kill -0 \"$P\" 2>/dev/null; then PID=\"$P\"; fi; fi\n");
+        sb.append("[ -z \"$(echo $APIDS)\" ] && APIDS=\"$PID\"\n");
+        sb.append("echo \"PIDS|$(echo $APIDS)\"\n");
         sb.append("echo \"PID|$PID\"\n");
         sb.append("if [ -n \"$PID\" ]; then\n");
         // 启动时间统一输出 YYYY-MM-DD HH:mm:ss：
@@ -1720,17 +1733,31 @@ public class DeployService {
         sb.append("  echo \"UPTIME|$(ps -o etime= -p $PID 2>/dev/null | tr -d ' ')\"\n");
         sb.append("  echo \"RSS|$(ps -o rss= -p $PID 2>/dev/null | tr -d ' ')\"\n");
         sb.append("fi\n");
-        // jar 信息：自定义部署可能包含多个 jar，逐个取大小与时间后拼成一行
+        // jar 信息：自定义部署可能包含多个 jar，逐个取大小与时间后拼成一行；主 jar 前加 ★ 标记
         sb.append("JI=''\n");
         for (String n : jarNamesOf(t)) {
             if (ShellUtil.isBlank(n)) {
                 continue;
             }
-            sb.append("JI=\"$JI ").append(n).append(": $(ls -lh ").append(ShellUtil.quote(t.jarPath(n)))
+            sb.append("JI=\"$JI ").append(isPrimaryJar(t, n) ? "★" : "").append(n)
+                    .append(": $(ls -lh ").append(ShellUtil.quote(t.jarPath(n)))
                     .append(" 2>/dev/null | awk '{print $5\" \"$6\" \"$7\" \"$8}')\"\n");
         }
         sb.append("echo \"JAR|$JI\"\n");
         return sb.toString();
+    }
+
+    /** 该 jar 是否为「状态查询用的主 jar」（未配置主 jar 时恒 false），仅用于状态信息里加标记 */
+    private static boolean isPrimaryJar(DeployTarget t, String name) {
+        if (ShellUtil.isBlank(t.getPrimaryJar()) || ShellUtil.isBlank(name)) {
+            return false;
+        }
+        String p = t.getPrimaryJar().trim();
+        int slash = p.lastIndexOf('/');
+        if (slash >= 0) {
+            p = p.substring(slash + 1).trim();
+        }
+        return p.equalsIgnoreCase(name.trim());
     }
 
     /**
@@ -2019,8 +2046,13 @@ public class DeployService {
 
     /** 把 jar 文件名列表拼成 pgrep / grep -E 可用的扩展正则（转义元字符，避免点号被当成通配） */
     private static String jarRegex(DeployTarget t, boolean fullPath) {
+        return jarRegex(jarNamesOf(t), t, fullPath);
+    }
+
+    /** 同上，但只用传入的 jar 名称集合（状态查询 / 启动复核只要主 jar 时用） */
+    private static String jarRegex(List<String> names, DeployTarget t, boolean fullPath) {
         StringBuilder sb = new StringBuilder();
-        for (String n : jarNamesOf(t)) {
+        for (String n : names) {
             if (ShellUtil.isBlank(n)) {
                 continue;
             }
@@ -2064,8 +2096,16 @@ public class DeployService {
      * 同时排除本管理服务自身的进程与执行脚本的 shell。
      */
     private String pidListCommand(DeployTarget t) {
-        String nameRe = ShellUtil.quote(jarRegex(t, false));
-        String pathRe = ShellUtil.quote(jarRegex(t, true));
+        return pidListCommand(t, jarNamesOf(t));
+    }
+
+    /**
+     * 同上，但按指定的 jar 名称集合定位。用于「只关心主 jar」的场景（状态查询 / 启动复核）：
+     * 多 jar 时调用方传入 {@link DeployTarget#monitorJarNames()} 即可只认主 jar。
+     */
+    private String pidListCommand(DeployTarget t, List<String> names) {
+        String nameRe = ShellUtil.quote(jarRegex(names, t, false));
+        String pathRe = ShellUtil.quote(jarRegex(names, t, true));
         String dir = ShellUtil.quote(ShellUtil.trimToEmpty(t.getRemoteDir()));
         StringBuilder sb = new StringBuilder();
         sb.append("DIR=").append(dir).append("; ");
@@ -2092,9 +2132,11 @@ public class DeployService {
 
     /**
      * 定位运行指定 jar 的进程 PID（多个时取第一个，用于展示与存活判断）。
+     * <p>只按「状态查询用的 jar」匹配：配置了「主 jar 包」时只认它，避免多 jar 场景下
+     * 把同目录另一个 jar 的 PID 当成主服务；未配置时与停止逻辑一致（任一 jar 命中）。
      */
     private String pidCommand(DeployTarget t) {
-        return "pids=$(" + pidListCommand(t) + "); echo $pids | awk '{print $1}'";
+        return "pids=$(" + pidListCommand(t, t.monitorJarNames()) + "); echo $pids | awk '{print $1}'";
     }
 
     // ---------------------------------------------------------------- 工具

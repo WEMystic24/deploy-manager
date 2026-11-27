@@ -513,6 +513,14 @@ button:disabled {
   font-size: 13px;
 }
 
+/* 状态卡片里 PID 后面的「共 N 个进程」小字（多 jar 自定义部署时出现） */
+.stat .v .pid-count {
+  font-weight: 400;
+  font-size: 11px;
+  color: #9aa5b1;
+  margin-left: 6px;
+}
+
 h3.section {
   font-size: 14px;
   margin-bottom: 12px;
